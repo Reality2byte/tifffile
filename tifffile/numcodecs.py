@@ -41,10 +41,10 @@ from typing import TYPE_CHECKING
 from numcodecs import registry
 from numcodecs.abc import Codec
 
-from .tifffile import TiffFile, TiffWriter
+from .tifffile import METADATA_DEFAULT, TiffFile, TiffWriter
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Sequence
+    from collections.abc import Sequence
     from typing import Any
 
     from .tifffile import (
@@ -66,7 +66,7 @@ class Tiff(Codec):  # type: ignore[misc]
     def __init__(
         self,
         # TiffFile.asarray
-        key: int | slice | Iterable[int] | None = None,
+        key: int | slice | Sequence[int] | None = None,
         series: int | None = None,
         level: int | None = None,
         squeeze: bool | None = None,
@@ -87,7 +87,7 @@ class Tiff(Codec):  # type: ignore[misc]
         compressionargs: dict[str, Any] | None = None,
         predictor: PREDICTOR | int | str | bool | None = None,
         subsampling: tuple[int, int] | None = None,
-        metadata: dict[str, Any] | None = {},  # noqa: B006
+        metadata: dict[str, Any] | None = METADATA_DEFAULT,
         extratags: Sequence[TagTuple] | None = None,
         truncate: bool = False,
         maxworkers: int | None = None,
@@ -159,6 +159,8 @@ class Tiff(Codec):  # type: ignore[misc]
             )
 
 
-def register_codec(cls: Codec = Tiff, codec_id: str | None = None) -> None:
+def register_codec(
+    cls: type[Codec] = Tiff, codec_id: str | None = None
+) -> None:
     """Register :py:class:`Tiff` codec with Numcodecs."""
     registry.register_codec(cls, codec_id=codec_id)
