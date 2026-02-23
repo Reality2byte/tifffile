@@ -1,6 +1,9 @@
+#!/usr/bin/env python3
 # tifffile/__main__.py
 
-"""Tifffile package command line script."""
+"""Display image and metadata in TIFF file."""
+
+from __future__ import annotations
 
 import sys
 
