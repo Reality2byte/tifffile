@@ -110,14 +110,14 @@ setup(
     extras_require={
         'codecs': ['imagecodecs>=2025.11.11'],
         'xml': ['defusedxml', 'lxml'],
-        'zarr': ['zarr>=3.1.3', 'fsspec', 'kerchunk'],
+        'zarr': ['zarr>=3.1.5', 'fsspec', 'kerchunk'],
         'plot': ['matplotlib'],
         'all': [
             'imagecodecs>=2025.11.11',
             'matplotlib',
             'defusedxml',
             'lxml',
-            'zarr>=3.1.3',
+            'zarr>=3.1.5',
             'fsspec',
             'kerchunk',
         ],
@@ -138,7 +138,7 @@ setup(
             'requests',
             'roifile',
             'xarray',
-            'zarr>=3.1.3',
+            'zarr>=3.1.5',
         ],
     },
     entry_points={
