@@ -1,15 +1,12 @@
 #!/usr/bin/env python3
 # tifffile/tiffcomment.py
 
-"""Print or replace ImageDescription in first page of TIFF file.
-
-Usage: ``tiffcomment [--set comment] file``
-
-"""
+"""Print or replace ImageDescription in first page of TIFF file."""
 
 from __future__ import annotations
 
-import os
+import argparse
+import contextlib
 import sys
 
 try:
@@ -23,45 +20,93 @@ except ImportError:
 
 def main(argv: list[str] | None = None) -> int:
     """Tiffcomment command line usage main function."""
-    comment: str | bytes | None
+    parser = argparse.ArgumentParser(
+        prog='tiffcomment',
+        description=(
+            'Print or replace ImageDescription in first page of TIFF file.'
+        ),
+        epilog=(
+            'Example: tiffcomment --set "my description" image.tif\n'
+            'When multiple files are given with --set or --set-file,'
+            ' the same comment is written to all of them.'
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        'files',
+        nargs='+',
+        metavar='file',
+        help='TIFF file(s) to read or modify',
+    )
+    comment_group = parser.add_mutually_exclusive_group()
+    comment_group.add_argument(
+        '--set',
+        dest='comment',
+        metavar='comment',
+        help='replacement comment string',
+    )
+    comment_group.add_argument(
+        '--set-file',
+        dest='comment_file',
+        type=argparse.FileType('rb'),
+        metavar='file',
+        help='path to a file whose raw bytes replace the comment',
+    )
+    parser.add_argument(
+        '--page',
+        dest='pageindex',
+        type=int,
+        metavar='N',
+        help='index of page to read or modify (default: 0)',
+    )
+    parser.add_argument(
+        '--tag',
+        dest='tagcode',
+        metavar='code',
+        help='tag code or name to read or modify (default: ImageDescription)',
+    )
+    args = parser.parse_args(None if argv is None else argv[1:])
 
-    if argv is None:
-        argv = sys.argv
-
-    if len(argv) > 2 and argv[1] in '--set':
-        comment = argv[2]
-        files = argv[3:]
+    comment: bytes | None
+    if args.comment_file is not None:
+        with args.comment_file:
+            comment = args.comment_file.read()
+    elif args.comment is not None:
+        try:
+            comment = args.comment.encode('ascii')
+        except UnicodeEncodeError:
+            parser.error(
+                'comment contains non-ASCII characters;'
+                ' use --set-file with a pre-encoded file'
+            )
+            # comment = b''  # unreachable; satisfies mypy
     else:
         comment = None
-        files = argv[1:]
 
-    if len(files) == 0 or any(f.startswith('-') for f in files):
-        print()
-        print(__doc__.strip())
-        return 0
+    tagcode: int | str | None = args.tagcode
+    if tagcode is not None:
+        with contextlib.suppress(ValueError):
+            tagcode = int(tagcode)
 
-    if comment is None:
-        pass
-    elif os.path.exists(comment):
-        with open(comment, 'rb') as fh:
-            comment = fh.read()
-    else:
+    ret = 0
+    for file in args.files:
         try:
-            comment = comment.encode('ascii')
-        except UnicodeEncodeError as exc:
-            print(f'{exc}')
-            assert isinstance(comment, str)
-            comment = comment.encode()
-
-    for file in files:
-        try:
-            result = tiffcomment(file, comment)
+            result = tiffcomment(
+                file, comment, pageindex=args.pageindex, tagcode=tagcode
+            )
         except Exception as exc:
-            print(f'{file}: {exc}')
+            print(f'{file}: {exc}', file=sys.stderr)
+            ret = 1
         else:
             if result:
+                if isinstance(result, bytes):
+                    result = result.decode(errors='replace')
+                if len(args.files) > 1:
+                    print(f'# {file}')
                 print(result)
-    return 0
+                if len(args.files) > 1:
+                    print()
+    return ret
 
 
 if __name__ == '__main__':
