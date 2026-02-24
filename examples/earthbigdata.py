@@ -38,7 +38,7 @@
 
 by [Christoph Gohlke](https://www.cgohlke.com)
 
-Published October 9, 2021. Last updated Jan 28, 2026.
+Published October 9, 2021. Last updated February 24, 2026.
 
 This Python script uses the [tifffile](https://github.com/cgohlke/tifffile) and
 [imagecodecs](https://github.com/cgohlke/imagecodecs) packages to create a
@@ -117,10 +117,10 @@ latitude_coordinates = [
 latitude_category = {}
 i = 0
 for j in range(82, -1, -1):
-    latitude_category[f'N{j:-02}'] = i
+    latitude_category[f'N{j:02}'] = i
     i += 1
 for j in range(1, 79):
-    latitude_category[f'S{j:-02}'] = i
+    latitude_category[f'S{j:02}'] = i
     i += 1
 
 longitude_label = 'longitude'
@@ -133,10 +133,10 @@ longitude_coordinates = [
 longitude_category = {}
 i = 0
 for j in range(180, 0, -1):
-    longitude_category[f'W{j:-03}'] = i
+    longitude_category[f'W{j:03}'] = i
     i += 1
 for j in range(180):
-    longitude_category[f'E{j:-03}'] = i
+    longitude_category[f'E{j:03}'] = i
     i += 1
 
 season_label = 'season'
@@ -357,6 +357,7 @@ store.write_fsspec(
     _append=True,
     _close=False,
 )
+store.close()
 
 # %% [markdown]
 """
@@ -412,8 +413,8 @@ for mode in (
             _close=False,
         )
 
-
-for mode in ('inc', 'lsmap'):
+modes = ('inc', 'lsmap')
+for mode in modes:
     fileseq = tifffile.TiffSequence(
         [file for file in tiff_files if '_' + mode in file],
         pattern=(
@@ -451,7 +452,7 @@ for mode in ('inc', 'lsmap'):
             groupname=mode,
             codec_id='imagecodecs_tiff',
             _append=True,
-            _close=mode == 'lsmap',  # close after last store
+            _close=mode == modes[-1],
         )
 
 # %% [markdown]
