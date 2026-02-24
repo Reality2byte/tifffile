@@ -31,7 +31,7 @@
 
 """Unittests for the tifffile package.
 
-:Version: 2026.2.20
+:Version: 2026.2.24
 
 """
 
@@ -67,12 +67,7 @@ if TYPE_CHECKING:
 
 import numpy
 import pytest
-from numpy.testing import (
-    assert_allclose,
-    assert_array_almost_equal,
-    assert_array_equal,
-    assert_raises,
-)
+from numpy.testing import assert_allclose, assert_array_equal, assert_raises
 
 import tifffile
 
@@ -97,7 +92,6 @@ try:
         logger,  # noqa: F405
         strptime,  # noqa: F405
         natural_sorted,  # noqa: F405
-        stripnull,  # noqa: F405
         memmap,  # noqa: F405
         repeat_nd,  # noqa: F405
         format_size,  # noqa: F405
@@ -176,6 +170,7 @@ from tifffile.tifffile import (  # noqa: F401
     natural_sorted,
     order_axes,
     parse_filenames,
+    parse_kwargs,
     pformat,
     pilatus_description_metadata,
     product,
@@ -187,14 +182,11 @@ from tifffile.tifffile import (  # noqa: F401
     reshape_nd,
     scanimage_artist_metadata,
     scanimage_description_metadata,
-    sequence,
     shaped_description,
     shaped_description_metadata,
     snipstr,
     squeeze_axes,
     stk_description_metadata,
-    stripascii,
-    stripnull,
     strptime,
     subresolution,
     svs_description_metadata,
@@ -203,14 +195,14 @@ from tifffile.tifffile import (  # noqa: F401
     transpose_axes,
     unique_strings,
     unpack_rgb,
+    update_kwargs,
     validate_jhove,
     xml2dict,
 )
 
 HERE = os.path.dirname(__file__)
 TEMP_DIR = os.path.join(HERE, '_tmp')
-PRIVATE_DIR = os.path.join(HERE, 'data', 'private')
-PUBLIC_DIR = os.path.join(HERE, 'data', 'public')
+DATA_DIR = os.path.join(HERE, 'data')
 
 IS_BE = sys.byteorder == 'big'
 IS_PYPY = 'pypy' in sys.version.lower()
@@ -227,11 +219,10 @@ def skip(key: str, default: bool) -> bool:  # noqa: FBT001
 
 # skip tests requiring large memory
 SKIP_LARGE = skip('SKIP_LARGE', default=sys.maxsize < 2**32)
+SKIP_SLOW = skip('SKIP_SLOW', default=True)
 SKIP_EXTENDED = skip('SKIP_EXTENDED', default=False)
-# skip public files
-SKIP_PUBLIC = skip('SKIP_PUBLIC', default=not os.path.exists(PUBLIC_DIR))
-# skip private files
-SKIP_PRIVATE = skip('SKIP_PRIVATE', default=not os.path.exists(PRIVATE_DIR))
+# skip data files
+SKIP_FILE = skip('SKIP_FILE', default=not os.path.exists(DATA_DIR))
 # skip validate written files with jhove
 SKIP_VALIDATE = skip('SKIP_VALIDATE', default=True)
 SKIP_CODECS = skip('SKIP_CODECS', default=False)
@@ -329,29 +320,15 @@ def _data_file(
     return path
 
 
-def private_file(pathname: str, base: str = PRIVATE_DIR) -> str:
-    """Return path to private test file(s)."""
+def _file(pathname: str, base: str = DATA_DIR) -> str | list[str]:
+    """Return path to test file(s)."""
     files = _data_file(pathname, base, expand=False)
     assert isinstance(files, str)
     return files
 
 
-def private_files(pathname: str, base: str = PRIVATE_DIR) -> list[str]:
-    """Return path to private test file(s)."""
-    files = _data_file(pathname, base, expand=True)
-    assert isinstance(files, list)
-    return files
-
-
-def public_file(pathname: str, base: str = PUBLIC_DIR) -> str | list[str]:
-    """Return path to public test file(s)."""
-    files = _data_file(pathname, base, expand=False)
-    assert isinstance(files, str)
-    return files
-
-
-def public_files(pathname: str, base: str = PUBLIC_DIR) -> list[str]:
-    """Return path to public test file(s)."""
+def _files(pathname: str, base: str = DATA_DIR) -> list[str]:
+    """Return path to test files."""
     files = _data_file(pathname, base, expand=True)
     assert isinstance(files, list)
     return files
@@ -495,7 +472,7 @@ class TempFileName:
         self.remove = remove or tempfile.gettempdir() == TEMP_DIR
         if not name:
             fh = tempfile.NamedTemporaryFile(prefix='test_')
-            self.name = fh.named
+            self.name = fh.name
             fh.close()
         else:
             self.name = os.path.join(TEMP_DIR, f'test_{name}{ext}')
@@ -584,12 +561,12 @@ def test_issue_imread_kwargs_legacy():
             TiffFile(filename, pages=[1, 2])
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_issue_infinite_loop():
     """Test infinite loop reading more than two tags of same code in IFD."""
     # Reported by D. Hughes on 2019.7.26
     # the test file is corrupted but should not cause infinite loop
-    filename = private_file('gdk-pixbuf/bug784903-overflow-dimensions.tiff')
+    filename = _file('gdk-pixbuf/bug784903-overflow-dimensions.tiff')
     with TiffFile(filename) as tif:
         page = tif.pages.first
         assert page.compression == 0  # invalid
@@ -597,13 +574,13 @@ def test_issue_infinite_loop():
 
 
 @pytest.mark.skipif(
-    SKIP_PRIVATE or SKIP_CODECS or not imagecodecs.JPEG.available,
+    SKIP_FILE or SKIP_CODECS or not imagecodecs.JPEG.available,
     reason=REASON,
 )
 def test_issue_jpeg_ia():
     """Test JPEG compressed intensity image with alpha channel."""
     # no extrasamples!
-    filename = private_file('issues/jpeg_ia.tiff')
+    filename = _file('issues/jpeg_ia.tiff')
     with TiffFile(filename) as tif:
         page = tif.pages.first
         assert page.compression == COMPRESSION.JPEG
@@ -615,13 +592,13 @@ def test_issue_jpeg_ia():
 
 
 @pytest.mark.skipif(
-    SKIP_PRIVATE or SKIP_CODECS or not imagecodecs.JPEG.available,
+    SKIP_FILE or SKIP_CODECS or not imagecodecs.JPEG.available,
     reason=REASON,
 )
 def test_issue_jpeg_palette():
     """Test invalid JPEG compressed intensity image with palette."""
     # https://forum.image.sc/t/viv-and-avivator/45999/24
-    filename = private_file('issues/FL_cells.ome.tif')
+    filename = _file('issues/FL_cells.ome.tif')
     with TiffFile(filename) as tif:
         page = tif.pages.first
         assert page.compression == COMPRESSION.JPEG
@@ -657,10 +634,10 @@ def test_issue_specific_pages():
         assert_array_equal(image, data[1])
 
 
-@pytest.mark.skipif(SKIP_PUBLIC, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_issue_circular_ifd(caplog):
     """Test circular IFD logs error but is still readable."""
-    filename = public_file('Tiff-Library-4J/IFD struct/Circular E.tif')
+    filename = _file('Tiff-Library-4J/IFD struct/Circular E.tif')
     with TiffFile(filename) as tif:
         assert len(tif.pages) == 2
         assert 'invalid circular reference' in caplog.text
@@ -669,11 +646,11 @@ def test_issue_circular_ifd(caplog):
         assert image[1, 1499, 1999, 2] == 110
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_issue_bad_description(caplog):
     """Test page.description is empty when ImageDescription is not ASCII."""
     # ImageDescription is not ASCII but bytes
-    filename = private_file('stk/cells in the eye2.stk')
+    filename = _file('stk/cells in the eye2.stk')
     with TiffFile(filename) as tif:
         page = tif.pages.first
         assert page.description == ''
@@ -681,12 +658,12 @@ def test_issue_bad_description(caplog):
     assert 'coercing invalid ASCII to bytes' in caplog.text
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_issue_bad_ascii(caplog):
     """Test coerce invalid ASCII to bytes."""
     # ImageID is not ASCII but bytes
     # https://github.com/blink1073/tifffile/pull/38
-    filename = private_file('issues/tifffile_013_tagfail.tif')
+    filename = _file('issues/tifffile_013_tagfail.tif')
     with TiffFile(filename) as tif:
         tags = tif.pages.first.tags
         assert tags['ImageID'].value[-8:] == b'rev 2893'
@@ -719,11 +696,11 @@ def test_issue_sampleformat_default():
             assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_issue_palette_with_extrasamples():
     """Test read palette with extra samples."""
     # https://github.com/python-pillow/Pillow/issues/1597
-    filename = private_file('issues/palette_with_extrasamples.tif')
+    filename = _file('issues/palette_with_extrasamples.tif')
     with TiffFile(filename) as tif:
         assert len(tif.pages) == 1
         page = tif.pages.first
@@ -746,11 +723,11 @@ def test_issue_palette_with_extrasamples():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_issue_incorrect_rowsperstrip_count():
     """Test read incorrect count for rowsperstrip; bitspersample = 4."""
     # https://github.com/python-pillow/Pillow/issues/1544
-    filename = private_file('bad/incorrect_count.tiff')
+    filename = _file('bad/incorrect_count.tiff')
     with TiffFile(filename) as tif:
         assert len(tif.pages) == 1
         page = tif.pages.first
@@ -771,11 +748,11 @@ def test_issue_incorrect_rowsperstrip_count():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_issue_extra_strips(caplog):
     """Test read extra strips."""
     # https://github.com/opencv/opencv/issues/17054
-    filename = private_file('issues/extra_strips.tif')
+    filename = _file('issues/extra_strips.tif')
     with TiffFile(filename) as tif:
         assert not tif.is_bigtiff
         assert len(tif.pages) == 1
@@ -793,10 +770,10 @@ def test_issue_extra_strips(caplog):
     assert 'incorrect StripByteCounts count' in caplog.text
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_issue_no_bytecounts(caplog):
     """Test read no bytecounts."""
-    filename = private_file('bad/img2_corrupt.tif')
+    filename = _file('bad/img2_corrupt.tif')
     with TiffFile(filename) as tif:
         assert not tif.is_bigtiff
         assert len(tif.pages) == 1
@@ -809,12 +786,12 @@ def test_issue_no_bytecounts(caplog):
         image = tif.asarray()
         assert image.shape == (800, 1200)
         # fails: assert_aszarr_method(tif, image)
-    assert 'invalid valueoffset=0' in caplog.text
+    assert 'invalid value offset 0' in caplog.text
     assert 'invalid data type 31073' in caplog.text
     assert 'invalid page offset 808333686' in caplog.text
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_issue_missing_eoi_in_strips():
     """Test read LZW strips without EOI."""
     # 256x256 uint16, lzw, imagej
@@ -824,7 +801,7 @@ def test_issue_missing_eoi_in_strips():
     # Failed with "series 0 failed: string size must be a multiple of
     # element size"
     # Reported by Kai Wohlfahrt on 3/7/2014
-    filename = private_file('issues/stack.tif')
+    filename = _file('issues/stack.tif')
     with TiffFile(filename) as tif:
         assert tif.is_imagej
         assert tif.byteorder == '<'
@@ -854,11 +831,11 @@ def test_issue_missing_eoi_in_strips():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_issue_imagej_grayscalemode():
     """Test read ImageJ grayscale mode RGB image."""
     # https://github.com/cgohlke/tifffile/issues/6
-    filename = private_file('issues/hela-cells.tif')
+    filename = _file('issues/hela-cells.tif')
     with TiffFile(filename) as tif:
         assert tif.is_imagej
         assert tif.byteorder == '>'
@@ -936,10 +913,10 @@ def test_issue_valueoffset(byteorder):
             assert tag.valuebytecount == 4
 
 
-@pytest.mark.skipif(SKIP_PUBLIC, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_issue_pages_number():
     """Test number of pages."""
-    filename = public_file('tifffile/100000_pages.tif')
+    filename = _file('tifffile/100000_pages.tif')
     with TiffFile(filename) as tif:
         assert len(tif.pages) == 100000
         assert__str__(tif, 0)
@@ -1155,19 +1132,19 @@ def test_issue_pathlib():
             assert_array_equal(im[0], data)
 
     # TiffSequence container
-    if SKIP_PRIVATE or SKIP_CODECS:
+    if SKIP_FILE or SKIP_CODECS:
         pytest.skip(REASON)
-    filename = pathlib.Path(private_file('TiffSequence.zip'))
+    filename = pathlib.Path(_file('TiffSequence.zip'))
     with TiffSequence('*.tif', container=filename, pattern=None) as tifs:
         im = tifs.asarray()
         assert im[9, 256, 256] == 135
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_issue_lzw_corrupt():
     """Test decode corrupted LZW segment raises RuntimeError."""
     # reported by S Richter on 2020.2.17
-    filename = private_file('issues/lzw_corrupt.tiff')
+    filename = _file('issues/lzw_corrupt.tiff')
     with pytest.raises(RuntimeError), TiffFile(filename) as tif:
         _ = tif.asarray()
 
@@ -1235,24 +1212,24 @@ def test_issue_write_separated():
             assert_array_equal(page.asarray(), extrasample)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_issue_mmap():
     """Test read from mmap object with no readinto function.."""
-    filename = public_file('OME/bioformats-artificial/4D-series.ome.tiff')
+    filename = _file('OME/bioformats-artificial/4D-series.ome.tiff')
     with open(filename, 'rb') as fh:
         mm = mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ)
         assert_array_equal(imread(mm), imread(filename))
         mm.close()
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_issue_micromanager(caplog):
     """Test fallback to ImageJ metadata if OME series fails."""
     # https://github.com/cgohlke/tifffile/issues/54
     # https://forum.image.sc/t/47567/9
     # OME-XML does not contain reference to master file
     # file has corrupted MicroManager DisplaySettings metadata
-    filename = private_file(
+    filename = _file(
         'OME/'
         'image_stack_tpzc_50tp_2p_5z_3c_512k_1_MMStack_2-Pos001_000.ome.tif'
     )
@@ -1313,15 +1290,13 @@ def test_issue_imagej_singlet_dimensions():
 
 
 @pytest.mark.skipif(
-    SKIP_PRIVATE or SKIP_CODECS or not imagecodecs.JPEG.available,
+    SKIP_FILE or SKIP_CODECS or not imagecodecs.JPEG.available,
     reason=REASON,
 )
 def test_issue_cr2_ojpeg():
     """Test read OJPEG image from CR2."""
     # https://github.com/cgohlke/tifffile/issues/75
-
-    filename = private_file('CanonCR2/Canon - EOS M6 - RAW (3 2).cr2')
-
+    filename = _file('CanonCR2/Canon - EOS M6 - RAW (3 2).cr2')
     with TiffFile(filename) as tif:
         assert len(tif.pages) == 4
         page = tif.pages.first
@@ -1365,15 +1340,13 @@ def test_issue_cr2_ojpeg():
 
 
 @pytest.mark.skipif(
-    SKIP_PRIVATE or SKIP_CODECS or not imagecodecs.JPEG.available,
+    SKIP_FILE or SKIP_CODECS or not imagecodecs.JPEG.available,
     reason=REASON,
 )
 def test_issue_ojpeg_preview():
     """Test read JPEGInterchangeFormat from RAW image."""
     # https://github.com/cgohlke/tifffile/issues/93
-
-    filename = private_file('RAW/RAW_NIKON_D3X.NEF')
-
+    filename = _file('RAW/RAW_NIKON_D3X.NEF')
     with TiffFile(filename) as tif:
         assert len(tif.pages) == 1
         page = tif.pages.first
@@ -1405,15 +1378,13 @@ def test_issue_ojpeg_preview():
 
 
 @pytest.mark.skipif(
-    SKIP_PRIVATE or SKIP_CODECS or not imagecodecs.JPEG.available,
+    SKIP_FILE or SKIP_CODECS or not imagecodecs.JPEG.available,
     reason=REASON,
 )
 def test_issue_arw(caplog):
     """Test read Sony ARW RAW image."""
     # https://github.com/cgohlke/tifffile/issues/95
-
-    filename = private_file('RAW/A1_full_lossless_compressed.ARW')
-
+    filename = _file('RAW/A1_full_lossless_compressed.ARW')
     with TiffFile(filename) as tif:
         assert len(tif.pages) == 3
         assert len(tif.series) == 4
@@ -1547,14 +1518,12 @@ def test_issue_svs_doubleheader():
     }
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_issue_packbits_dtype():
     """Test read and efficiently write PackBits compressed int16 image."""
     # https://github.com/blink1073/tifffile/issues/61
     # requires imagecodecs > 2021.6.8
-
-    filename = private_file('packbits/imstack_packbits-int16.tif')
-
+    filename = _file('packbits/imstack_packbits-int16.tif')
     with TiffFile(filename) as tif:
         assert len(tif.pages) == 519
         page = tif.pages[181]
@@ -1591,13 +1560,10 @@ def test_issue_packbits_dtype():
         assert_aszarr_method(tif, data)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_issue_predictor_byteorder():
     """Test read big-endian uint32 RGB with horizontal predictor."""
-    filename = private_file(
-        'issues/flower-rgb-contig-32_msb_zip_predictor.tiff'
-    )
-
+    filename = _file('issues/flower-rgb-contig-32_msb_zip_predictor.tiff')
     with TiffFile(filename) as tif:
         assert tif.tiff.byteorder == '>'
         assert len(tif.pages) == 1
@@ -1638,12 +1604,12 @@ def test_issue_dask_multipage(truncate, chunkmode):
             assert_array_equal(data, daskarray)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_ZARR, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_ZARR, reason=REASON)
 @pytest.mark.parametrize('chunkmode', [0, 2])
 def test_issue_zarr_store_closed(chunkmode):
     """Test Zarr store filehandle is open when reading from unloaded pages."""
     # https://github.com/cgohlke/tifffile/issues/67#issuecomment-2246367891
-    filename = private_file('ImageJ/_malaria_parasites.tif')
+    filename = _file('ImageJ/_malaria_parasites.tif')
     data = imread(filename)
     store = imread(filename, aszarr=True, chunkmode=chunkmode)
     assert isinstance(store, ZarrStore)
@@ -1666,11 +1632,11 @@ def test_issue_zarr_store_closed(chunkmode):
     assert_array_equal(chunk, data)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_ZARR or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_ZARR or SKIP_CODECS, reason=REASON)
 @pytest.mark.parametrize('chunkmode', [0, 2])
 def test_issue_zarr_store_multifile_closed(chunkmode):
     """Test Zarr store can read from closed files."""
-    filename = private_file('OME/tubhiswt-4D-lzw/tubhiswt_C0_T0.ome.tif')
+    filename = _file('OME/tubhiswt-4D-lzw/tubhiswt_C0_T0.ome.tif')
     data = imread(filename)
     assert data.shape == (43, 10, 2, 512, 512)
     store = imread(filename, aszarr=True, chunkmode=chunkmode)
@@ -1683,11 +1649,11 @@ def test_issue_zarr_store_multifile_closed(chunkmode):
 
 
 @pytest.mark.skipif(
-    SKIP_PRIVATE or SKIP_CODECS or not imagecodecs.LZW.available, reason=REASON
+    SKIP_FILE or SKIP_CODECS or not imagecodecs.LZW.available, reason=REASON
 )
 def test_issue_read_from_closed_file():
     """Test read from closed file handles."""
-    filename = private_file('OME/tubhiswt-4D-lzw/tubhiswt_C0_T0.ome.tif')
+    filename = _file('OME/tubhiswt-4D-lzw/tubhiswt_C0_T0.ome.tif')
     with tifffile.TiffFile(filename) as tif:
         count = 0
         for frame in tif.series[0].pages[:10]:
@@ -1717,7 +1683,7 @@ def test_issue_read_from_closed_file():
 
 
 @pytest.mark.skipif(
-    SKIP_PRIVATE or SKIP_CODECS or not imagecodecs.PNG.available, reason=REASON
+    SKIP_FILE or SKIP_CODECS or not imagecodecs.PNG.available, reason=REASON
 )
 def test_issue_filesequence_categories():
     """Test FileSequence with categories."""
@@ -1725,7 +1691,7 @@ def test_issue_filesequence_categories():
 
     with tifffile.FileSequence(
         imagecodecs.imread,
-        private_files('dataset-A1-20200531/*.png'),
+        _files('dataset-A1-20200531/*.png'),
         pattern=(
             r'(?P<sampleid>.{2})-'
             r'(?P<experiment>.+)-\d{8}T\d{6}-PSII0-'
@@ -1733,8 +1699,6 @@ def test_issue_filesequence_categories():
         ),
         categories={'sampleid': {'A1': 0, 'B1': 1}, 'experiment': {'doi': 0}},
     ) as pngs:
-        with pytest.warns(DeprecationWarning):
-            assert len(pngs.files) == 2
         assert len(pngs) == 2
         assert pngs.files_missing == 2
         assert pngs.shape == (2, 1, 2)
@@ -1744,12 +1708,12 @@ def test_issue_filesequence_categories():
         assert data[1, 0, 1, 100, 100] == 353
 
 
-@pytest.mark.skipif(SKIP_PUBLIC, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_issue_filesequence_file_parameter():
     """Test FileSequence.asarray with 'file' parameter removed in 2022.4.22."""
     # https://github.com/bluesky/tiled/pull/97
 
-    files = public_files('tifffile/temp_C001T00*.tif')
+    files = _files('tifffile/temp_C001T00*.tif')
     with TiffSequence(files) as tiffs:
         assert tiffs.shape == (2,)
         with pytest.raises(TypeError):
@@ -1758,13 +1722,12 @@ def test_issue_filesequence_file_parameter():
             assert_array_equal(tiffs.asarray(file=1), imread(files[1]))
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_issue_imagej_prop():
     """Test read and write ImageJ prop metadata type."""
     # https://github.com/cgohlke/tifffile/issues/103
     # also test write indexed ImageJ file
-
-    filename = private_file('issues/triple-sphere-big-distance=035.tif')
+    filename = _file('issues/triple-sphere-big-distance=035.tif')
     with tifffile.TiffFile(filename) as tif:
         assert tif.is_imagej
         ijmeta = tif.imagej_metadata
@@ -1799,10 +1762,10 @@ def test_issue_imagej_prop():
         assert_array_equal(image, data)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_issue_missing_dataoffset(caplog):
     """Test read file with missing data offset."""
-    filename = private_file('gdal/bigtiff_header_extract.tif')
+    filename = _file('gdal/bigtiff_header_extract.tif')
     with tifffile.TiffFile(filename) as tif:
         page = tif.pages.first
         assert page.imagewidth == 100000
@@ -1817,11 +1780,11 @@ def test_issue_missing_dataoffset(caplog):
             tif.asarray()
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_issue_imagej_metadatabytecounts():
     """Test read ImageJ file with many IJMetadataByteCounts."""
     # https://github.com/cgohlke/tifffile/issues/111
-    filename = private_file('imagej/issue111.tif')
+    filename = _file('imagej/issue111.tif')
     with tifffile.TiffFile(filename) as tif:
         assert tif.is_imagej
         page = tif.pages.first
@@ -1829,7 +1792,7 @@ def test_issue_imagej_metadatabytecounts():
         assert isinstance(page.tags['IJMetadata'].value, dict)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_issue_description_bytes():
     """Test read file with imagedescription bytes."""
     # https://github.com/cgohlke/tifffile/issues/112
@@ -1881,14 +1844,14 @@ def test_issue_imagej_colormap():
 
 
 @pytest.mark.skipif(
-    SKIP_PRIVATE or SKIP_CODECS or not imagecodecs.WEBP.available,
+    SKIP_FILE or SKIP_CODECS or not imagecodecs.WEBP.available,
     reason=REASON,
 )
 @pytest.mark.parametrize('name', ['tile', 'strip'])
 def test_issue_webp_rgba(name, caplog):
     """Test read WebP segments with missing alpha channel."""
     # https://github.com/cgohlke/tifffile/issues/122
-    filename = private_file(f'issues/CMU-1-Small-Region.{name}.webp.tiff')
+    filename = _file(f'issues/CMU-1-Small-Region.{name}.webp.tiff')
     with tifffile.TiffFile(filename) as tif:
         page = tif.pages.first
         assert page.compression == COMPRESSION.WEBP
@@ -1898,7 +1861,7 @@ def test_issue_webp_rgba(name, caplog):
 
 
 @pytest.mark.skipif(
-    SKIP_PRIVATE or SKIP_ZARR or SKIP_CODECS or not imagecodecs.WEBP.available,
+    SKIP_FILE or SKIP_ZARR or SKIP_CODECS or not imagecodecs.WEBP.available,
     reason=REASON,
 )
 def test_issue_webp_fsspec():
@@ -1910,7 +1873,7 @@ def test_issue_webp_fsspec():
     else:
         register_codecs('imagecodecs_webp', verbose=False)
 
-    filename = private_file('issues/CMU-1-Small-Region.tile.webp.tiff')
+    filename = _file('issues/CMU-1-Small-Region.tile.webp.tiff')
     url = os.path.dirname(filename).replace('\\', '/')
     data = imread(filename, series=0)
     with TempFileName('issue_webp_fsspec', ext='.json') as jsonfile:
@@ -1926,17 +1889,14 @@ def test_issue_webp_fsspec():
         assert_array_equal(zobj[:], data)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_ZARR, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_ZARR, reason=REASON)
 def test_issue_tiffslide():
     """Test no ValueError when closing TiffSlide with Zarr group."""
     # https://github.com/bayer-science-for-a-better-life/tiffslide/issues/25
-    try:
-        from tiffslide import TiffSlide
-    except ImportError:
-        pytest.skip('tiffslide missing')
+    tiffslide = pytest.importorskip('tiffslide', exc_type=ImportError)
 
-    filename = private_file('AperioSVS/CMU-1.svs')
-    with TiffSlide(filename) as slide:
+    filename = _file('AperioSVS/CMU-1.svs')
+    with tiffslide.TiffSlide(filename) as slide:
         _ = slide.ts_zarr_grp
         arr = slide.read_region((100, 200), 0, (256, 256), as_array=True)
         assert arr.shape == (256, 256, 3)
@@ -1945,10 +1905,7 @@ def test_issue_tiffslide():
 @pytest.mark.skipif(SKIP_ZARR, reason=REASON)
 def test_issue_xarray():
     """Test read Zarr store with fsspec and xarray."""
-    try:
-        import xarray
-    except ImportError:
-        pytest.skip('xarray missing')
+    xarray = pytest.importorskip('xarray')
 
     data = RNG.integers(0, 2**8, (5, 31, 33, 3), numpy.uint8)
 
@@ -1994,10 +1951,7 @@ def test_issue_xarray():
 @pytest.mark.skipif(SKIP_ZARR, reason=REASON)
 def test_issue_xarray_multiscale():
     """Test read multiscale Zarr store with fsspec and xarray."""
-    try:
-        import xarray
-    except ImportError:
-        pytest.skip('xarray missing')
+    xarray = pytest.importorskip('xarray')
 
     data = RNG.integers(0, 2**8, (8, 3, 128, 128), numpy.uint8)
 
@@ -2090,10 +2044,10 @@ def test_issue_invalid_resolution(resolution):
             assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_issue_indexing():
     """Test indexing methods."""
-    filename = public_file('tifffile/multiscene_pyramidal.ome.tif')
+    filename = _file('tifffile/multiscene_pyramidal.ome.tif')
     data0 = imread(filename)
     assert isinstance(data0, numpy.ndarray)
     assert data0.shape == (16, 32, 2, 256, 256)
@@ -2165,11 +2119,11 @@ def test_issue_shaped_metadata():
             assert meta[1]['number'] == 42
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_issue_uic_dates(caplog):
     """Test read MetaMorph STK metadata with invalid julian dates."""
     # https://github.com/cgohlke/tifffile/issues/129
-    filename = private_file('issues/Cells-003_Cycle00001_Ch1_000001.ome.tif')
+    filename = _file('issues/Cells-003_Cycle00001_Ch1_000001.ome.tif')
     with TiffFile(filename) as tif:
         assert tif.is_stk
         assert tif.is_ome
@@ -2207,17 +2161,17 @@ def test_issue_subfiletype_zero():
             )
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_issue_imagej_zct_order(caplog):
     """Test read ImageJ hyperstack with non-TZC order."""
     # https://forum.image.sc/t/69430
-    filename = private_file(
+    filename = _file(
         'MMStack/mosaic/d220708_HybISS_AS_cycles1to5_NoBridgeProbes_'
         'dim3x3__3_MMStack_2-Pos_000_000.ome.tif'
     )
     data = imread(filename, series=5, is_mmstack=False)
 
-    filename = private_file(
+    filename = _file(
         'MMStack/mosaic/d220708_HybISS_AS_cycles1to5_NoBridgeProbes_'
         'dim3x3__3_MMStack_2-Pos_000_001.ome.tif'
     )
@@ -2235,12 +2189,12 @@ def test_issue_imagej_zct_order(caplog):
         assert_array_equal(series.asarray(), data)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_issue_fei_sfeg_metadata():
     """Test read FEI_SFEG metadata."""
     # https://github.com/cgohlke/tifffile/pull/141
     # FEI_SFEG tag value is a base64 encoded XML string with BOM header
-    filename = private_file('issues/Helios-AutoSliceAndView.tif')
+    filename = _file('issues/Helios-AutoSliceAndView.tif')
     with TiffFile(filename) as tif:
         fei = tif.fei_metadata
         assert fei is not None
@@ -2248,7 +2202,7 @@ def test_issue_fei_sfeg_metadata():
         assert fei['System']['DisplayHeight'] == 0.324
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_issue_resolution():
     """Test consistency of reading and writing resolution."""
     resolution = (4294967295 / 3904515723, 4294967295 / 1952257861)  # 1.1, 2.2
@@ -2280,25 +2234,25 @@ def test_issue_resolution():
 
             assert page.get_resolution() == resolution
             assert page.get_resolution(resolutionunit) == resolution
-            assert_array_almost_equal(
+            assert_allclose(
                 page.get_resolution(RESUNIT.MICROMETER),
                 (resolution[0] / 10000, resolution[1] / 10000),
             )
-            assert_array_almost_equal(
+            assert_allclose(
                 page.get_resolution(RESUNIT.MICROMETER, 100),
                 (resolution[0] / 10000, resolution[1] / 10000),
             )
-            assert_array_almost_equal(
+            assert_allclose(
                 page.get_resolution('inch'),
                 (resolution[0] * 2.54, resolution[1] * 2.54),
             )
-            assert_array_almost_equal(
+            assert_allclose(
                 page.get_resolution(scale=111.111),
                 (resolution[0] * scale, resolution[1] * scale),
             )
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_issue_resolutionunit():
     """Test write resolutionunit defaults."""
     # https://github.com/cgohlke/tifffile/issues/145
@@ -2334,14 +2288,14 @@ def test_issue_resolutionunit():
             assert page.resolution == (1, 1)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_issue_ome_jpeg_colorspace():
     """Test colorspace of JPEG segments encoded by BioFormats."""
     # https://forum.image.sc/t/69862
     # JPEG encoded segments are stored as YCBCR but the
     # PhotometricInterpretation tag is RGB
     # CMU-1.svs exported by QuPath 0.3.2
-    filename = private_file('ome/CMU-1.ome.tif')
+    filename = _file('ome/CMU-1.ome.tif')
     with TiffFile(filename) as tif:
         assert tif.is_ome
         series = tif.series[0].levels[5]
@@ -2351,11 +2305,11 @@ def test_issue_ome_jpeg_colorspace():
         assert tuple(series.asarray()[800, 200]) == (207, 166, 198)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_issue_imagej_compressed():
     """Test read ImageJ hyperstack with compression."""
     # regression in tifffile 2022.7.28
-    filename = private_file('imagej/imagej_compressed.tif')
+    filename = _file('imagej/imagej_compressed.tif')
     with TiffFile(filename) as tif:
         assert tif.is_imagej
         assert len(tif.pages) == 120
@@ -2373,12 +2327,12 @@ def test_issue_imagej_compressed():
         assert series.asarray()[59, 1, 55, 87] == 5643
 
 
-@pytest.mark.skipif(SKIP_PUBLIC or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_issue_jpeg_rgb():
     """Test write JPEG compression in RGB mode."""
     # https://github.com/cgohlke/tifffile/issues/146
     # requires imagecodecs > 2022.7.31
-    data = imread(public_file('tifffile/rgb.tif'))
+    data = imread(_file('tifffile/rgb.tif'))
     assert data.shape == (32, 31, 3)
     with TempFileName('issue_jpeg_rgb') as filename:
         imwrite(
@@ -2399,11 +2353,11 @@ def test_issue_jpeg_rgb():
         assert_array_equal(image, imagecodecs.imread(filename))
 
 
-@pytest.mark.skipif(SKIP_PUBLIC, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_issue_imread_out():
     """Test imread supports out argument."""
     # https://github.com/cgohlke/tifffile/issues/147
-    filename = public_file('tifffile/rgb.tif')
+    filename = _file('tifffile/rgb.tif')
     image = imread(filename, out=None)
     assert isinstance(image, numpy.ndarray)
     data = imread(filename, out='memmap')
@@ -2687,12 +2641,12 @@ def test_issue_extratags_filter(caplog):
 
 
 @pytest.mark.skipif(
-    SKIP_PRIVATE or SKIP_CODECS or not imagecodecs.JPEG.available,
+    SKIP_FILE or SKIP_CODECS or not imagecodecs.JPEG.available,
     reason=REASON,
 )
 def test_issue_invalid_predictor(caplog):
     """Test decoding JPEG compression with invalid predictor tag."""
-    filename = private_file('issues/invalid_predictor.tiff')
+    filename = _file('issues/invalid_predictor.tiff')
     with TiffFile(filename) as tif:
         page = tif.pages.first
         assert page.predictor == 58240
@@ -2702,11 +2656,11 @@ def test_issue_invalid_predictor(caplog):
         assert data.shape == (1275, 1650, 4)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_issue_ome_missing_frames():
     """Test read OME TIFF with missing pages at end."""
     # https://github.com/cgohlke/tifffile/issues/199
-    filename = private_file('issues/stack_t24_y2048_x2448.tiff')
+    filename = _file('issues/stack_t24_y2048_x2448.tiff')
     with TiffFile(filename) as tif:
         assert tif.is_ome
         assert tif.byteorder == '<'
@@ -2749,7 +2703,7 @@ def test_issue_maxworkers():
         assert os.cpu_count() + 4 == TIFF.MAXIOWORKERS
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_issue_logging_filter(caplog):
     """Test raise an error by filtering logging messages."""
     # https://github.com/cgohlke/tifffile/issues/216
@@ -2758,11 +2712,11 @@ def test_issue_logging_filter(caplog):
     def log_filter(record):
         if record.levelno == logging.ERROR:
             assert record.funcName == '__init__'
-            assert 'invalid valueoffset=' in record.msg
+            assert 'invalid value offset' in record.msg
             raise ValueError(record.msg)
         return True
 
-    filename = private_file('bad/Gel1.tif')
+    filename = _file('bad/Gel1.tif')
 
     logger().addFilter(log_filter)
     try:
@@ -2771,16 +2725,16 @@ def test_issue_logging_filter(caplog):
     finally:
         logger().removeFilter(log_filter)
 
-    assert 'invalid valueoffset=' not in caplog.text
-    imread(private_file(filename))
-    assert 'invalid valueoffset=' in caplog.text
+    assert 'invalid value offset' not in caplog.text
+    imread(_file(filename))
+    assert 'invalid value offset' in caplog.text
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_issue_wrong_shape(caplog):
     """Test rewritten file with wrong shape in metadata."""
     # https://github.com/Kitware/UPennContrast/issues/491
-    filename = private_file('issues/2023_05_23_pw020_ctrl_well1.tif')
+    filename = _file('issues/2023_05_23_pw020_ctrl_well1.tif')
     with TiffFile(filename) as tif:
         assert tif.is_shaped
         page = tif.pages.first
@@ -2945,13 +2899,13 @@ def test_issue_buffersize(buffersize, tile):
     assert_array_equal(im, data)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_issue_ideas(caplog):
     """Test reading invalid TIFF produced by IDEAS."""
     # https://forum.image.sc/t/96103
     # NewSubfileType tag is of type bytes
     # FillOrder tag is zero
-    filename = private_file('IDEAS/IDEAS_file.ome.tif')
+    filename = _file('IDEAS/IDEAS_file.ome.tif')
     with TiffFile(filename) as tif:
         assert '0 is not a valid FILLORDER' in caplog.text
         assert 'invalid self.subfiletype=b' in caplog.text
@@ -2965,10 +2919,10 @@ def test_issue_ideas(caplog):
         assert_array_equal(page.asarray(), series.asarray())
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_issue_nodata_invalid(caplog):
     """Test read GeoTIFF with invalid nodata."""
-    filename = private_file('GeoTIFF/nodata_corrupted.tiff')
+    filename = _file('GeoTIFF/nodata_corrupted.tiff')
     with TiffFile(filename) as tif:
         assert 'GDAL_NODATA tag raised ValueError' in caplog.text
         assert tif.byteorder == '<'
@@ -2997,14 +2951,14 @@ def test_issue_nodata_invalid(caplog):
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_CODECS or SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_CODECS or SKIP_FILE, reason=REASON)
 def test_issue_tag_readfunc(caplog):
     """Test allow tag reader functions to fail."""
     # file has an OlympusSIS tag, which is pointing to invalid structure
-    filename = private_file('SIS/cirb_NOT_SIS.tif')
+    filename = _file('SIS/cirb_NOT_SIS.tif')
     with TiffFile(filename) as tif:
         # assert 'invalid OlympusSIS structure' in caplog.text
-        assert tif.pages.first.tags[33560].value == (1382303888,)
+        assert tif.pages.first.tags[33560].value == (1466916540,)
         assert 'invalid OlympusSIS structure' in caplog.text
         assert tif.series[0].kind == 'generic'
         data = tif.asarray()
@@ -3171,11 +3125,11 @@ def test_issue_not_binary():
                 imread(fh)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_issue_dcp():
     """Test read DNG DCP file."""
     # https://github.com/cgohlke/tifffile/issues/306
-    filename = private_file('DCP/example.dcp')
+    filename = _file('DCP/example.dcp')
     with TiffFile(filename) as tif:
         assert len(tif.pages) == 1
         page = tif.pages.first
@@ -3183,6 +3137,35 @@ def test_issue_dcp():
         assert page.dtype == bool
         assert page.shape == (0, 0)
         assert tif.asarray().shape == (0, 0)
+
+
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
+def test_issue_shaped_pyramid():
+    """Test read shaped pyramid TIFF file."""
+    # https://github.com/cgohlke/tifffile/issues/286
+    # shaped description is wrong for pages > 1
+    # use is_shaped=False to ignore incorrect metadata
+    filename = _file('hest/INT1.tif')
+
+    with TiffFile(filename) as tif:
+        assert len(tif.pages) == 8
+        assert tif.is_shaped
+        for page in tif.pages:
+            assert page.is_shaped
+            assert page.description == '{"shape": [19968, 19200, 3]}'
+        with pytest.raises(RuntimeError, match='incompatible keyframe'):
+            tif.series[0]
+
+    with TiffFile(filename, is_shaped=False) as tif:
+        assert not tif.is_shaped
+        assert len(tif.pages) == 8
+        assert len(tif.series) == 1
+        series = tif.series[0]
+        assert series.shape == (19968, 19200, 3)
+        assert series.axes == 'YXS'
+        assert series.kind == 'generic'
+        assert series.is_pyramidal
+        assert len(series.levels) == 8
 
 
 class TestExceptions:
@@ -3656,17 +3639,17 @@ class TestExceptions:
                 compressionargs={'compression': 'jpeg'},
             )
 
-    @pytest.mark.skipif(SKIP_PUBLIC, reason=REASON)
+    @pytest.mark.skipif(SKIP_FILE, reason=REASON)
     def test_sequence_imread_dtype(self):
         # dtype argument is deprecated
-        files = public_files('tifffile/temp_C001T00*.tif')
+        files = _files('tifffile/temp_C001T00*.tif')
         with pytest.raises(TypeError):
             imread(files, dtype=numpy.float64)
 
-    @pytest.mark.skipif(SKIP_PUBLIC, reason=REASON)
+    @pytest.mark.skipif(SKIP_FILE, reason=REASON)
     def test_filesequence_dtype(self):
         # dtype argument is deprecated
-        files = public_files('tifffile/temp_C001T00*.tif')
+        files = _files('tifffile/temp_C001T00*.tif')
         with pytest.raises(TypeError):
             TiffSequence(files).asarray(dtype=numpy.float64)
         with pytest.raises(TypeError):
@@ -3785,10 +3768,10 @@ def test_class_filecache():
         handles[0].close()
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_class_tifftag_astuple():
     """Test TiffTag.astuple method."""
-    filename = private_file('imagej/IJMetadata.tif')
+    filename = _file('imagej/IJMetadata.tif')
     with TiffFile(filename) as tif:
         tags = tif.pages.first.tags
         assert tags['BitsPerSample'].astuple() == (
@@ -3953,15 +3936,12 @@ def test_class_tifftag_overwrite(bigtiff, byteorder):
 
 
 @pytest.mark.skipif(
-    SKIP_LARGE
-    or SKIP_PRIVATE
-    or SKIP_CODECS
-    or not imagecodecs.JPEG.available,
+    SKIP_LARGE or SKIP_FILE or SKIP_CODECS or not imagecodecs.JPEG.available,
     reason=REASON,
 )
 def test_class_tifftag_overwrite_ndpi():
     """Test TiffTag.overwrite method on 64-bit NDPI file."""
-    filename = private_file('HamamatsuNDPI/103680x188160.ndpi')
+    filename = _file('HamamatsuNDPI/103680x188160.ndpi')
     with TiffFile(filename, mode='r+') as tif:
         assert tif.is_ndpi
         tags = tif.pages.first.tags
@@ -4504,6 +4484,108 @@ def test_class_omexml_datasets():
             assert len(tif.series) == 6
 
 
+def test_class_omexml_project():
+    """Test OmeXml class with Experimenter and Project elements."""
+    args = numpy.uint8, (3, 7), (1, 1, 1, 3, 7, 1)
+
+    # single Experimenter at init level
+    omexml = OmeXml(
+        Experimenter={
+            'FirstName': 'First',
+            'LastName': 'Last',
+            'Email': 'e@mail.com',
+        },
+        Project={'Name': 'MyProject', 'Description': 'My project'},
+    )
+    omexml.addimage(*args)
+    xml = omexml.tostring()
+    assert '<Experimenter ID="Experimenter:0"' in xml
+    assert 'FirstName="First"' in xml
+    assert 'LastName="Last"' in xml
+    assert 'Email="e@mail.com"' in xml
+    assert '<Project ID="Project:0" Name="MyProject">' in xml
+    assert '<Description>My project</Description>' in xml
+    # ordering: Project before Experimenter before Image
+    assert (
+        xml.index('<Project')
+        < xml.index('<Experimenter')
+        < xml.index('<Image')
+    )
+    # no ExperimenterRef in Image (Experimenter was only at init level)
+    assert '<ExperimenterRef' not in xml
+    assert_valid_omexml(xml)
+
+    # list of Experimenters and Projects at init level
+    omexml2 = OmeXml(
+        Experimenter=[
+            {'FirstName': 'Alice'},
+            {'FirstName': 'Bob', 'Institution': 'Uni'},
+        ],
+        Project=[
+            {'Name': 'Proj1'},
+            {'Name': 'Proj2'},
+        ],
+    )
+    omexml2.addimage(*args)
+    xml2 = omexml2.tostring()
+    assert xml2.count('<Experimenter ') == 2
+    assert xml2.count('<Project ') == 2
+    assert '<Experimenter ID="Experimenter:0"' in xml2
+    assert '<Experimenter ID="Experimenter:1"' in xml2
+    assert '<Project ID="Project:0" Name="Proj1">' in xml2
+    assert '<Project ID="Project:1" Name="Proj2">' in xml2
+    assert_valid_omexml(xml2)
+
+    # Experimenter at per-image level creates ExperimenterRef in Image
+    omexml3 = OmeXml()
+    omexml3.addimage(
+        *args,
+        AcquisitionDate='2024-01-01T00:00:00',
+        Description='My image',
+        Experimenter={'FirstName': 'Eve', 'LastName': 'Jones'},
+    )
+    xml3 = omexml3.tostring()
+    assert '<Experimenter ID="Experimenter:0"' in xml3
+    assert 'FirstName="Eve"' in xml3
+    assert '<ExperimenterRef ID="Experimenter:0"/>' in xml3
+    # schema order: AcquisitionDate < ExperimenterRef < Description
+    assert (
+        xml3.index('AcquisitionDate')
+        < xml3.index('ExperimenterRef')
+        < xml3.index('Description')
+    )
+    assert_valid_omexml(xml3)
+
+    # Project with AnnotationRef
+    omexml4 = OmeXml(
+        Project={
+            'Name': 'Annotated',
+            'CommentAnnotation': 'project note',
+        }
+    )
+    omexml4.addimage(*args)
+    xml4 = omexml4.tostring()
+    assert '<Project ID="Project:0" Name="Annotated">' in xml4
+    assert '<AnnotationRef ID="Annotation:0"/>' in xml4
+    assert '<CommentAnnotation ID="Annotation:0">' in xml4
+    assert_valid_omexml(xml4)
+
+    # Experimenter with AnnotationRef
+    omexml5 = OmeXml(
+        Experimenter={
+            'FirstName': 'Bob',
+            'CommentAnnotation': 'experimenter note',
+        }
+    )
+    omexml5.addimage(*args)
+    xml5 = omexml5.tostring()
+    assert '<Experimenter ID="Experimenter:0"' in xml5
+    assert '<AnnotationRef ID="Annotation:0"/>' in xml5
+    assert_valid_omexml(xml5)
+
+    assert__repr__(omexml)
+
+
 def test_class_omexml_multiimage():
     """Test OmeXml class with multiple images."""
     omexml = OmeXml(description='multiimage')
@@ -4522,6 +4604,29 @@ def test_class_omexml_multiimage():
     assert_valid_omexml(omexml)
 
 
+def test_class_omexml_escape():
+    """Test OmeXml class escaping of special characters in metadata values."""
+    # double-quote in attribute and element values
+    omexml = OmeXml()
+    omexml.addimage(
+        numpy.uint8,
+        (32, 32),
+        (1, 1, 1, 32, 32, 1),
+        Name='Image "Name"',
+        Channel={'Name': 'Ch "0"'},
+        MapAnnotation={'key "1"': 'val "2"'},
+    )
+    xml = omexml.tostring()
+    assert 'Name="Image &quot;Name&quot;"' in xml
+    assert 'Name="Ch &quot;0&quot;"' in xml
+    assert '<M K="key &quot;1&quot;">val &quot;2&quot;</M>' in xml
+    assert_valid_omexml(xml)
+
+    # mixed string: partial pre-escape must NOT suppress escaping of raw chars
+    # previously the guard returned 'a > b &amp; c' unchanged, leaving > raw
+    assert OmeXml._escape('a > b &amp; c') == 'a &gt; b &amp;amp; c'
+
+
 def test_class_timer(capsys):
     """Test Timer class."""
     started = Timer.clock()
@@ -4536,6 +4641,33 @@ def test_class_timer(capsys):
         assert__repr__(timer)
     captured = capsys.readouterr()
     assert captured.out == '3 days, 15:15:59.265359 s\n'
+
+
+def test_parse_kwargs():
+    """Test parse_kwargs function."""
+    kwargs = {'one': 1, 'two': 2, 'four': 4}
+    kwargs2 = parse_kwargs(kwargs, 'two', 'three', four=None, five=5)
+    assert kwargs == {'one': 1}
+    assert kwargs2 == {'two': 2, 'four': 4, 'five': 5}
+
+    assert parse_kwargs({}, 'a', b=2) == {'b': 2}
+
+    # _del not supported
+    # kwargs = {'one': 1, 'two': 2, 'four': 4}
+    # kwargs2 = parse_kwargs(
+    #     kwargs, 'two', 'three', four=None, five=5, _del=False
+    # )
+    # assert kwargs == {'one': 1, 'two': 2, 'four': 4}
+    # assert kwargs2 == {'two': 2, 'four': 4, 'five': 5}
+
+
+def test_update_kwargs():
+    """Test update_kwargs function."""
+    kwargs = {
+        'one': 1,
+    }
+    update_kwargs(kwargs, one=None, two=2)
+    assert kwargs == {'one': 1, 'two': 2}
 
 
 def test_func_xml2dict():
@@ -4843,32 +4975,49 @@ def test_func_natural_sorted():
     assert natural_sorted(['f1', 'f2', 'f10']) == ['f1', 'f2', 'f10']
 
 
-def test_func_stripnull():
-    """Test stripnull function."""
-    # with pytest.warns(DeprecationWarning):
-    assert stripnull(b'string\x00') == b'string'
-    assert stripnull(b'string\x00x') == b'string'
-    assert stripnull('string\x00', null='\0') == 'string'
-    assert (
-        stripnull(b'string\x00string\x00\x00', first=False)
-        == b'string\x00string'
-    )
-    assert (
-        stripnull('string\x00string\x00\x00', null='\0', first=False)
-        == 'string\x00string'
-    )
-
-
-def test_func_stripascii():
-    """Test stripascii function."""
-    assert stripascii(b'string\x00string\n\x01\x00') == b'string\x00string\n'
-    assert stripascii(b'\x00') == b''
-
-
-def test_func_sequence():
-    """Test sequence function."""
-    assert sequence(1) == (1,)
-    assert sequence([1]) == [1]
+def test_func_bytes2str():
+    """Test bytes2str function."""
+    # plain ASCII, no null
+    assert bytes2str(b'hello') == 'hello'
+    # empty bytes
+    assert bytes2str(b'') == ''
+    # null terminator strips trailing content
+    assert bytes2str(b'hello\x00world') == 'hello'
+    # null at start
+    assert bytes2str(b'\x00hello') == ''
+    # valid UTF-8 default encoding
+    assert bytes2str('caf\xe9'.encode()) == 'café'
+    # valid UTF-8 explicit encoding
+    assert bytes2str('caf\xe9'.encode(), encoding='utf-8') == 'café'
+    # CP1252 fallback: bytes not valid UTF-8 but valid cp1252
+    assert bytes2str(b'\x80') == '\u20ac'  # euro sign in cp1252
+    # explicit encoding that fails raises UnicodeDecodeError
+    with pytest.raises(UnicodeDecodeError):
+        bytes2str(b'\x80', encoding='utf-8')
+    # errors argument is passed through
+    assert bytes2str(b'\x80', encoding='utf-8', errors='replace') == '\ufffd'
+    assert bytes2str(b'\x80', encoding='utf-8', errors='ignore') == ''
+    # utf-16-le: basic string
+    assert bytes2str('AB'.encode('utf-16-le'), encoding='utf-16-le') == 'AB'
+    # utf-16-le: null terminator at aligned boundary
+    s = 'AB\x00CD'.encode('utf-16-le')  # AB + null code unit + CD
+    assert bytes2str(s, encoding='utf-16-le') == 'AB'
+    # utf-16-le: no null terminator — full string returned
+    assert bytes2str('AB'.encode('utf-16-le'), encoding='utf-16-le') == 'AB'
+    # utf-16-le: garbage bytes after aligned null do not cause decoding error
+    s = 'Hi\x00'.encode('utf-16-le') + b'\xff'  # null CU + odd garbage byte
+    assert bytes2str(s, encoding='utf-16-le') == 'Hi'
+    # utf-16-be: basic string with null terminator
+    s = 'XY\x00Z'.encode('utf-16-be')  # XY + null code unit + Z
+    assert bytes2str(s, encoding='utf-16-be') == 'XY'
+    # utf-16 with BOM
+    s = '\ufeffAB\x00CD'.encode('utf-16')
+    result = bytes2str(s, encoding='utf-16')
+    assert result in {'\ufeffAB', 'AB'}  # BOM handling is codec-defined
+    # utf-16: encoding name variants are all recognised as utf-16 family
+    s = 'OK\x00'.encode('utf-16-le')
+    assert bytes2str(s, encoding='UTF-16-LE') == 'OK'
+    assert bytes2str(s, encoding='utf_16_le') == 'OK'
 
 
 def test_func_product():
@@ -5570,7 +5719,6 @@ def test_func_pformat_dict():
  'GTRasterTypeGeoKey': 1,
  'KeyDirectoryVersion': 1,
 ...
-       [      0.,       0.,       0.,       0.],
        [      0.,       0.,       0.,       1.]]),
  'PCSCitationGeoKey': 'WGS 84 / UTM zone 29N',
  'ProjectedCSTypeGeoKey': 32629}"""
@@ -5669,21 +5817,18 @@ def test_func_pformat_xml():
  <Metadata_Id>
   <METADATA_FORMAT version="2.12.1">DIMAP</METADATA_FORMAT>
 ...
-   <BAND_INDEX>0</BAND_INDEX>
   </Spectral_Band_Info>
  </Image_Interpretation>
 </Dimap_Document>"""
     )
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_LARGE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_LARGE, reason=REASON)
 def test_func_lsm2bin():
     """Test lsm2bin function."""
     # Convert LSM to BIN
-    filename = private_file(
-        'lsm/Twoareas_Zstacks54slices_3umintervals_5cycles.lsm'
-    )
-    # filename = private_file(
+    filename = _file('lsm/Twoareas_Zstacks54slices_3umintervals_5cycles.lsm')
+    # filename = _file(
     #     'LSM/fish01-wt-t01-10_ForTest-20zplanes10timepoints.lsm')
     lsm2bin(filename, '', verbose=True)
 
@@ -5724,22 +5869,22 @@ def test_func_create_output():
 
     # existing array
     b = create_output(a, a.shape, a.dtype)
-    assert a is b.base
+    assert a is b  # a is b.base
     assert_array_equal(a, numpy.full(shape, 42, dtype))
 
     # existing array with fillvalue
     b = create_output(a, a.shape, a.dtype, fillvalue=1)
-    assert a is b.base
+    assert a is b  # a is b.base
     assert_array_equal(a, numpy.ones(shape, dtype))
 
     # reshapeable
     b = create_output(a, (1, 17, 16), a.dtype)
-    assert a is b.base
+    assert a is b  # a is b.base
     assert b.shape == (1, 17, 16)
 
     # castable dtype
     b = create_output(a, shape, numpy.uint8)
-    assert a is b.base
+    assert a is b  # a is b.base
     assert b.dtype == numpy.uint16
 
     # not contiguous
@@ -5961,10 +6106,7 @@ def test_func_zlib_lzma_codecs(codec, length):
 @pytest.mark.parametrize('length', [0, 2, 31 * 33 * 3])
 def test_func_zstd_codecs(length):
     """Test zstd codec functions."""
-    try:
-        from compression import zstd  # noqa: F401 - Python >= 3.14
-    except ImportError:
-        pytest.skip('zstd codec not available')
+    _ = pytest.importorskip('compression.zstd')
 
     from tifffile._imagecodecs import zstd_decode, zstd_encode
 
@@ -6072,13 +6214,13 @@ def test_func_check_shape():
 
 # Test FileHandle class
 
-FILEHANDLE_NAME = public_file('tifffile/test_FileHandle.bin')
+FILEHANDLE_NAME = _file('tifffile/test_FileHandle.bin')
 FILEHANDLE_SIZE = 7937381
 FILEHANDLE_OFFSET = 333
 FILEHANDLE_LENGTH = 7937381 - 666
 
 
-@pytest.mark.skipif(SKIP_PUBLIC, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def create_filehandle_file():
     """Write test_FileHandle.bin file."""
     # array start 999
@@ -6112,14 +6254,14 @@ def create_filehandle_file():
         numpy.ones(999, dtype=numpy.uint8).tofile(fh)
         # tiff
         print('tiff start', fh.tell())
-        with open('data/public/tifffile/generic_series.tif', 'rb') as tif:
+        with open('data/tifffile/generic_series.tif', 'rb') as tif:
             fh.write(tif.read())
         print('tiff end', fh.tell())
         # buffer
         numpy.ones(999, dtype=numpy.uint8).tofile(fh)
         # micromanager
         print('micromanager start', fh.tell())
-        with open('data/public/tifffile/micromanager.tif', 'rb') as tif:
+        with open('data/tifffile/micromanager.tif', 'rb') as tif:
             fh.write(tif.read())
         print('micromanager end', fh.tell())
         # buffer
@@ -6212,7 +6354,7 @@ def test_filehandle_write_bytesio_offset():
         assert fh.read(len(value)) == value
 
 
-@pytest.mark.skipif(SKIP_PUBLIC, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_filehandle_filename():
     """Test FileHandle from filename."""
     with FileHandle(FILEHANDLE_NAME) as fh:
@@ -6221,7 +6363,7 @@ def test_filehandle_filename():
         assert_filehandle(fh)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_filehandle_filename_offset():
     """Test FileHandle from filename with offset."""
     with FileHandle(
@@ -6232,7 +6374,7 @@ def test_filehandle_filename_offset():
         assert_filehandle(fh, FILEHANDLE_OFFSET)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_filehandle_bytesio():
     """Test FileHandle from BytesIO."""
     with open(FILEHANDLE_NAME, 'rb') as fh:
@@ -6243,7 +6385,7 @@ def test_filehandle_bytesio():
         assert_filehandle(fh)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_filehandle_bytesio_offset():
     """Test FileHandle from BytesIO with offset."""
     with open(FILEHANDLE_NAME, 'rb') as fh:
@@ -6256,7 +6398,7 @@ def test_filehandle_bytesio_offset():
         assert_filehandle(fh, offset=FILEHANDLE_OFFSET)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_filehandle_openfile():
     """Test FileHandle from open file."""
     with open(FILEHANDLE_NAME, 'rb') as fhandle:
@@ -6267,7 +6409,7 @@ def test_filehandle_openfile():
         assert not fhandle.closed
 
 
-@pytest.mark.skipif(SKIP_PUBLIC, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_filehandle_openfile_offset():
     """Test FileHandle from open file with offset."""
     with open(FILEHANDLE_NAME, 'rb') as fhandle:
@@ -6280,7 +6422,7 @@ def test_filehandle_openfile_offset():
         assert not fhandle.closed
 
 
-@pytest.mark.skipif(SKIP_PUBLIC, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_filehandle_filehandle():
     """Test FileHandle from other FileHandle."""
     with FileHandle(FILEHANDLE_NAME, 'rb') as fhandle:
@@ -6291,7 +6433,7 @@ def test_filehandle_filehandle():
         assert not fhandle.closed
 
 
-@pytest.mark.skipif(SKIP_PUBLIC, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_filehandle_offset():
     """Test FileHandle from other FileHandle with offset."""
     with FileHandle(FILEHANDLE_NAME, 'rb') as fhandle:
@@ -6304,7 +6446,7 @@ def test_filehandle_offset():
         assert not fhandle.closed
 
 
-@pytest.mark.skipif(SKIP_PUBLIC, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_filehandle_reopen():
     """Test FileHandle close and open."""
     try:
@@ -6331,7 +6473,7 @@ def test_filehandle_unc_path():
         assert_filehandle(fh)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC or SKIP_ZARR, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_ZARR, reason=REASON)
 def test_filehandle_fsspec_localfileopener():
     """Test FileHandle from fsspec LocalFileOpener."""
     with fsspec.open(FILEHANDLE_NAME, 'rb') as fhandle:
@@ -6342,7 +6484,7 @@ def test_filehandle_fsspec_localfileopener():
         assert not fhandle.closed
 
 
-@pytest.mark.skipif(SKIP_PUBLIC or SKIP_ZARR, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_ZARR, reason=REASON)
 def test_filehandle_fsspec_openfile():
     """Test FileHandle from fsspec OpenFile."""
     fhandle = fsspec.open(FILEHANDLE_NAME, 'rb')
@@ -6353,7 +6495,7 @@ def test_filehandle_fsspec_openfile():
     fhandle.close()
 
 
-@pytest.mark.skipif(SKIP_PUBLIC or SKIP_HTTP or SKIP_ZARR, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_HTTP or SKIP_ZARR, reason=REASON)
 def test_filehandle_fsspec_http():
     """Test FileHandle from HTTP via fsspec."""
     with fsspec.open(URL + 'test/test_FileHandle.bin', 'rb') as fhandle:
@@ -6381,15 +6523,15 @@ def test_filehandle_exclusive_creation():
 
 # Test read specific files
 
-if SKIP_EXTENDED or SKIP_PRIVATE:
+if SKIP_EXTENDED or SKIP_FILE:
     TIGER_FILES = []
     TIGER_IDS = []
 else:
     TIGER_FILES = (
-        public_files('graphicsmagick.org/be/*.tif')
-        + public_files('graphicsmagick.org/le/*.tif')
-        + public_files('graphicsmagick.org/bigtiff-be/*.tif')
-        + public_files('graphicsmagick.org/bigtiff-le/*.tif')
+        _files('graphicsmagick.org/be/*.tif')
+        + _files('graphicsmagick.org/le/*.tif')
+        + _files('graphicsmagick.org/bigtiff-be/*.tif')
+        + _files('graphicsmagick.org/bigtiff-le/*.tif')
     )
     TIGER_IDS = [
         '-'.join(f.split(os.path.sep)[-2:])
@@ -6399,7 +6541,7 @@ else:
     ]
 
 
-@pytest.mark.skipif(SKIP_PUBLIC or SKIP_CODECS or SKIP_EXTENDED, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS or SKIP_EXTENDED, reason=REASON)
 @pytest.mark.parametrize('filename', TIGER_FILES, ids=TIGER_IDS)
 def test_read_tigers(filename):
     """Test tiger images from GraphicsMagick."""
@@ -6474,10 +6616,10 @@ def test_read_tigers(filename):
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_exif_paint():
     """Test read EXIF tags."""
-    filename = private_file('exif/paint.tif')
+    filename = _file('exif/paint.tif')
     with TiffFile(filename) as tif:
         exif = tif.pages.first.tags['ExifTag'].value
         assert exif['ColorSpace'] == 65535
@@ -6488,11 +6630,11 @@ def test_read_exif_paint():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_read_hopper_2bit():
     """Test read 2-bit, fillorder=lsb2msb."""
     # https://github.com/python-pillow/Pillow/pull/1789
-    filename = public_file('pillow/tiff_gray_2_4_bpp/hopper2.tif')
+    filename = _file('pillow/tiff_gray_2_4_bpp/hopper2.tif')
     with TiffFile(filename) as tif:
         assert tif.byteorder == '<'
         assert len(tif.pages) == 1
@@ -6521,7 +6663,7 @@ def test_read_hopper_2bit():
         assert_aszarr_method(tif, data)
         assert__str__(tif)
     # reversed
-    filename = public_file('pillow/tiff_gray_2_4_bpp/hopper2R.tif')
+    filename = _file('pillow/tiff_gray_2_4_bpp/hopper2R.tif')
     with TiffFile(filename) as tif:
         page = tif.pages.first
         assert page.photometric == PHOTOMETRIC.MINISBLACK
@@ -6530,7 +6672,7 @@ def test_read_hopper_2bit():
         assert_aszarr_method(tif)
         assert__str__(tif)
     # inverted
-    filename = public_file('pillow/tiff_gray_2_4_bpp/hopper2I.tif')
+    filename = _file('pillow/tiff_gray_2_4_bpp/hopper2I.tif')
     with TiffFile(filename) as tif:
         page = tif.pages.first
         assert page.photometric == PHOTOMETRIC.MINISWHITE
@@ -6538,7 +6680,7 @@ def test_read_hopper_2bit():
         assert_aszarr_method(tif)
         assert__str__(tif)
     # inverted and reversed
-    filename = public_file('pillow/tiff_gray_2_4_bpp/hopper2IR.tif')
+    filename = _file('pillow/tiff_gray_2_4_bpp/hopper2IR.tif')
     with TiffFile(filename) as tif:
         page = tif.pages.first
         assert page.photometric == PHOTOMETRIC.MINISWHITE
@@ -6547,11 +6689,11 @@ def test_read_hopper_2bit():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_read_hopper_4bit():
     """Test read 4-bit, fillorder=lsb2msb."""
     # https://github.com/python-pillow/Pillow/pull/1789
-    filename = public_file('pillow/tiff_gray_2_4_bpp/hopper4.tif')
+    filename = _file('pillow/tiff_gray_2_4_bpp/hopper4.tif')
     with TiffFile(filename) as tif:
         assert tif.byteorder == '<'
         assert len(tif.pages) == 1
@@ -6578,7 +6720,7 @@ def test_read_hopper_4bit():
         assert data.shape == (128, 128)
         assert data[50, 63] == 13
     # reversed
-    filename = public_file('pillow/tiff_gray_2_4_bpp/hopper4R.tif')
+    filename = _file('pillow/tiff_gray_2_4_bpp/hopper4R.tif')
     with TiffFile(filename) as tif:
         page = tif.pages.first
         assert page.photometric == PHOTOMETRIC.MINISBLACK
@@ -6586,14 +6728,14 @@ def test_read_hopper_4bit():
         assert_array_equal(tif.asarray(), data)
         assert__str__(tif)
     # inverted
-    filename = public_file('pillow/tiff_gray_2_4_bpp/hopper4I.tif')
+    filename = _file('pillow/tiff_gray_2_4_bpp/hopper4I.tif')
     with TiffFile(filename) as tif:
         page = tif.pages.first
         assert page.photometric == PHOTOMETRIC.MINISWHITE
         assert_array_equal(tif.asarray(), 15 - data)
         assert__str__(tif)
     # inverted and reversed
-    filename = public_file('pillow/tiff_gray_2_4_bpp/hopper4IR.tif')
+    filename = _file('pillow/tiff_gray_2_4_bpp/hopper4IR.tif')
     with TiffFile(filename) as tif:
         page = tif.pages.first
         assert page.photometric == PHOTOMETRIC.MINISWHITE
@@ -6601,12 +6743,12 @@ def test_read_hopper_4bit():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_lsb2msb():
     """Test read fillorder=lsb2msb, 2 series."""
     # http://lists.openmicroscopy.org.uk/pipermail/ome-users
     #   /2015-September/005635.html
-    filename = private_file('test_lsb2msb.tif')
+    filename = _file('test_lsb2msb.tif')
     with TiffFile(filename) as tif:
         assert tif.byteorder == '<'
         assert len(tif.pages) == 2
@@ -6653,10 +6795,10 @@ def test_read_lsb2msb():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_gimp_u2():
     """Test read uint16 with horizontal predictor by GIMP."""
-    filename = public_file('tifffile/gimp_u2.tiff')
+    filename = _file('tifffile/gimp_u2.tiff')
     with TiffFile(filename) as tif:
         assert len(tif.pages) == 1
         page = tif.pages.first
@@ -6673,10 +6815,10 @@ def test_read_gimp_u2():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_gimp_f4():
     """Test read float32 with horizontal predictor by GIMP."""
-    filename = public_file('tifffile/gimp_f4.tiff')
+    filename = _file('tifffile/gimp_f4.tiff')
     with TiffFile(filename) as tif:
         assert len(tif.pages) == 1
         page = tif.pages.first
@@ -6688,17 +6830,17 @@ def test_read_gimp_f4():
         assert page.samplesperpixel == 3
         image = tif.asarray()
         assert image.flags['C_CONTIGUOUS']
-        assert_array_almost_equal(
-            image[110, 110], (0.35565534, 0.26402164, 0.6280674)
+        assert_allclose(
+            image[110, 110], (0.35565534, 0.26402164, 0.6280674), rtol=1e-5
         )
         assert_aszarr_method(tif, image)
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_gimp_f2():
     """Test read float16 with horizontal predictor by GIMP."""
-    filename = public_file('tifffile/gimp_f2.tiff')
+    filename = _file('tifffile/gimp_f2.tiff')
     with TiffFile(filename) as tif:
         assert len(tif.pages) == 1
         page = tif.pages.first
@@ -6710,21 +6852,22 @@ def test_read_gimp_f2():
         assert page.samplesperpixel == 3
         image = tif.asarray()
         assert image.flags['C_CONTIGUOUS']
-        assert_array_almost_equal(
+        assert_allclose(
             image[110, 110].astype(numpy.float64),
             (0.35571289, 0.26391602, 0.62792969),
+            rtol=1e-5,
         )
         assert_aszarr_method(tif, image)
         assert__str__(tif)
 
 
 @pytest.mark.skipif(
-    SKIP_PRIVATE or SKIP_CODECS or not imagecodecs.JPEG8.available,
+    SKIP_FILE or SKIP_CODECS or not imagecodecs.JPEG8.available,
     reason=REASON,
 )
 def test_read_dng_jpeglossy():
     """Test read JPEG_LOSSY in DNG."""
-    filename = private_file('DNG/Adobe DNG Converter.dng')
+    filename = _file('DNG/Adobe DNG Converter.dng')
     with TiffFile(filename) as tif:
         assert len(tif.pages) == 1
         assert len(tif.series) == 6
@@ -6735,12 +6878,12 @@ def test_read_dng_jpeglossy():
 
 
 @pytest.mark.skipif(
-    SKIP_PRIVATE or SKIP_CODECS or not imagecodecs.LJPEG.available,
+    SKIP_FILE or SKIP_CODECS or not imagecodecs.LJPEG.available,
     reason=REASON,
 )
 def test_read_dng_ljpeg():
     """Test read 14-bit CFA LJPEG in DNG."""
-    filename = private_file('DNG/uint14_ljpeg_cfa.dng')
+    filename = _file('DNG/uint14_ljpeg_cfa.dng')
     with TiffFile(filename) as tif:
         assert len(tif.pages) == 1
         assert len(tif.series) == 3
@@ -6762,12 +6905,12 @@ def test_read_dng_ljpeg():
 
 
 @pytest.mark.skipif(
-    SKIP_PRIVATE or SKIP_CODECS or not imagecodecs.LJPEG.available,
+    SKIP_FILE or SKIP_CODECS or not imagecodecs.LJPEG.available,
     reason=REASON,
 )
 def test_read_dng_linearraw():
     """Test read 12-bit LinearRAW LJPEG in DNG."""
-    filename = private_file('DNG/LinearRaw.dng')
+    filename = _file('DNG/LinearRaw.dng')
     with TiffFile(filename) as tif:
         assert len(tif.pages) == 1
         assert len(tif.series) == 2
@@ -6786,12 +6929,12 @@ def test_read_dng_linearraw():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 @pytest.mark.parametrize('fp', ['fp16', 'fp24', 'fp32'])
 def test_read_dng_floatpredx2(fp):
     """Test read FLOATINGPOINTX2 predictor in DNG."""
     # <https://raw.pixls.us/data/Canon/EOS%205D%20Mark%20III/>
-    filename = private_file(f'DNG/fpx2/hdrmerge-bayer-{fp}-w-pred-deflate.dng')
+    filename = _file(f'DNG/fpx2/hdrmerge-bayer-{fp}-w-pred-deflate.dng')
     with TiffFile(filename) as tif:
         assert len(tif.pages) == 1
         assert len(tif.series) == 3
@@ -6814,12 +6957,12 @@ def test_read_dng_floatpredx2(fp):
 
 
 @pytest.mark.skipif(
-    SKIP_PRIVATE or SKIP_CODECS or not imagecodecs.JPEGXL.available,
+    SKIP_FILE or SKIP_CODECS or not imagecodecs.JPEGXL.available,
     reason=REASON,
 )
 def test_read_dng_jpegxl():
     """Test read JPEGXL in DNG."""
-    filename = private_file('DNG/20240125_204051_1.dng')
+    filename = _file('DNG/20240125_204051_1.dng')
     with TiffFile(filename) as tif:
         assert len(tif.pages) == 1
         assert len(tif.series) == 6
@@ -6855,20 +6998,20 @@ def test_read_dng_jpegxl():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 @pytest.mark.parametrize('filename', ['sample1.orf', 'sample1.rw2'])
 def test_read_rawformats(filename, caplog):
     """Test parse unsupported RAW formats."""
-    filename = private_file(f'RAWformats/{filename}')
+    filename = _file(f'RAWformats/{filename}')
     with TiffFile(filename) as tif:
         assert 'RAW format' in caplog.text
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_iss_vista():
     """Test read bogus imagedepth tag by ISS Vista."""
-    filename = private_file('iss/10um_beads_14stacks_ch1.tif')
+    filename = _file('iss/10um_beads_14stacks_ch1.tif')
     with TiffFile(filename) as tif:
         assert tif.byteorder == '<'
         assert len(tif.pages) == 14
@@ -6894,10 +7037,10 @@ def test_read_iss_vista():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_vips():
     """Test read 347x641 RGB, bigtiff, pyramid, tiled, produced by VIPS."""
-    filename = private_file('vips.tif')
+    filename = _file('vips.tif')
     with TiffFile(filename) as tif:
         assert tif.byteorder == '<'
         assert len(tif.pages) == 4
@@ -6938,10 +7081,10 @@ def test_read_vips():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_volumetric():
     """Test read 128x128x128, float32, tiled SGI."""
-    filename = public_file('tifffile/sgi_depth.tif')
+    filename = _file('tifffile/sgi_depth.tif')
     with TiffFile(filename) as tif:
         assert tif.byteorder == '<'
         assert len(tif.pages) == 1
@@ -6983,10 +7126,10 @@ def test_read_volumetric():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_read_oxford():
     """Test read 601x81, uint8, LZW."""
-    filename = public_file('juicypixels/oxford.tif')
+    filename = _file('juicypixels/oxford.tif')
     with TiffFile(filename) as tif:
         assert tif.byteorder == '>'
         assert len(tif.pages) == 1
@@ -7017,10 +7160,10 @@ def test_read_oxford():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_cramps():
     """Test 800x607 uint8, PackBits."""
-    filename = public_file('juicypixels/cramps.tif')
+    filename = _file('juicypixels/cramps.tif')
     with TiffFile(filename) as tif:
         assert tif.byteorder == '>'
         assert len(tif.pages) == 1
@@ -7050,10 +7193,10 @@ def test_read_cramps():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_cramps_tile():
     """Test read 800x607 uint8, raw, volumetric, tiled."""
-    filename = public_file('juicypixels/cramps-tile.tif')
+    filename = _file('juicypixels/cramps-tile.tif')
     with TiffFile(filename) as tif:
         assert tif.byteorder == '>'
         assert len(tif.pages) == 1
@@ -7089,10 +7232,10 @@ def test_read_cramps_tile():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_jello():
     """Test read 256x192x3, uint16, palette, PackBits."""
-    filename = public_file('juicypixels/jello.tif')
+    filename = _file('juicypixels/jello.tif')
     with TiffFile(filename) as tif:
         assert tif.byteorder == '>'
         assert len(tif.pages) == 1
@@ -7122,10 +7265,10 @@ def test_read_jello():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_read_quad_lzw():
     """Test read 384x512 RGB uint8 old style LZW."""
-    filename = public_file('libtiff/quad-lzw-compat.tiff')
+    filename = _file('libtiff/quad-lzw-compat.tiff')
     with TiffFile(filename) as tif:
         assert tif.byteorder == '>'
         assert len(tif.pages) == 1
@@ -7155,10 +7298,10 @@ def test_read_quad_lzw():
         assert_aszarr_method(tif, data)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_read_quad_lzw_le():
     """Test read 384x512 RGB uint8 LZW."""
-    filename = private_file('quad-lzw_le.tif')
+    filename = _file('quad-lzw_le.tif')
     with TiffFile(filename) as tif:
         assert tif.byteorder == '<'
         assert len(tif.pages) == 1
@@ -7189,11 +7332,11 @@ def test_read_quad_lzw_le():
         assert_decode_method(page)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_read_quad_tile():
     """Test read 384x512 RGB uint8 LZW tiled."""
     # Strips and tiles defined in same page
-    filename = public_file('juicypixels/quad-tile.tif')
+    filename = _file('juicypixels/quad-tile.tif')
     with TiffFile(filename) as tif:
         assert__str__(tif)
         assert tif.byteorder == '>'
@@ -7229,10 +7372,10 @@ def test_read_quad_tile():
         assert_aszarr_method(tif, data)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_read_strike():
     """Test read 256x200 RGBA uint8 LZW."""
-    filename = public_file('juicypixels/strike.tif')
+    filename = _file('juicypixels/strike.tif')
     with TiffFile(filename) as tif:
         assert__str__(tif)
         assert tif.byteorder == '>'
@@ -7265,10 +7408,10 @@ def test_read_strike():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_incomplete_tile_contig():
     """Test read PackBits compressed incomplete tile, contig RGB."""
-    filename = public_file('GDAL/contig_tiled.tif')
+    filename = _file('GDAL/contig_tiled.tif')
     with TiffFile(filename) as tif:
         assert tif.byteorder == '>'
         assert len(tif.pages) == 1
@@ -7300,10 +7443,10 @@ def test_read_incomplete_tile_contig():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_incomplete_tile_separate():
     """Test read PackBits compressed incomplete tile, separate RGB."""
-    filename = public_file('GDAL/separate_tiled.tif')
+    filename = _file('GDAL/separate_tiled.tif')
     with TiffFile(filename) as tif:
         assert tif.byteorder == '>'
         assert len(tif.pages) == 1
@@ -7335,10 +7478,10 @@ def test_read_incomplete_tile_separate():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_django():
     """Test read 3x480x320, uint16, palette, raw."""
-    filename = private_file('django.tiff')
+    filename = _file('django.tiff')
     with TiffFile(filename) as tif:
         assert tif.byteorder == '<'
         assert len(tif.pages) == 1
@@ -7368,10 +7511,10 @@ def test_read_django():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_pygame_icon():
     """Test read 128x128 RGBA uint8 PackBits."""
-    filename = private_file('pygame_icon.tiff')
+    filename = _file('pygame_icon.tiff')
     with TiffFile(filename) as tif:
         assert tif.byteorder == '>'
         assert len(tif.pages) == 1
@@ -7406,10 +7549,10 @@ def test_read_pygame_icon():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_read_rgba_wo_extra_samples():
     """Test read 1065x785 RGBA uint8."""
-    filename = private_file('rgba_wo_extra_samples.tif')
+    filename = _file('rgba_wo_extra_samples.tif')
     with TiffFile(filename) as tif:
         assert tif.byteorder == '<'
         assert len(tif.pages) == 1
@@ -7442,10 +7585,10 @@ def test_read_rgba_wo_extra_samples():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_rgb565():
     """Test read 64x64 RGB uint8 5,6,5 bitspersample."""
-    filename = private_file('rgb565.tif')
+    filename = _file('rgb565.tif')
     with TiffFile(filename) as tif:
         assert tif.byteorder == '<'
         assert len(tif.pages) == 1
@@ -7476,10 +7619,10 @@ def test_read_rgb565():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_read_generic_series():
     """Test read 4 series in 6 pages."""
-    filename = public_file('tifffile/generic_series.tif')
+    filename = _file('tifffile/generic_series.tif')
     with TiffFile(filename) as tif:
         assert tif.byteorder == '<'
         assert len(tif.pages) == 6
@@ -7564,10 +7707,10 @@ def test_read_generic_series():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_read_freeimage():
     """Test read 3 series in 3 pages RGB LZW."""
-    filename = private_file('freeimage.tif')
+    filename = _file('freeimage.tif')
     with TiffFile(filename) as tif:
         assert tif.byteorder == '<'
         assert len(tif.pages) == 3
@@ -7596,11 +7739,11 @@ def test_read_freeimage():
             assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_read_leadtools():
     """Test read LeadTools 11-pages with different compression."""
     # https://www.leadtools.com/support/forum/posts/t10960-
-    filename = private_file('LeadTools/MultipleFormats.tif')
+    filename = _file('LeadTools/MultipleFormats.tif')
     with TiffFile(filename) as tif:
         assert tif.byteorder == '<'
         assert len(tif.pages) == 11
@@ -7727,10 +7870,10 @@ def test_read_leadtools():
             data = page.asarray()
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_read_12bit():
     """Test read 12 bit images."""
-    filename = private_file('12bit.tif')
+    filename = _file('12bit.tif')
     with TiffFile(filename) as tif:
         assert tif.byteorder == '<'
         assert len(tif.pages) == 1000
@@ -7760,14 +7903,14 @@ def test_read_12bit():
         assert__str__(tif, 0)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_read_lzw_12bit_table():
     """Test read lzw-full-12-bit-table.tif.
 
     Also test RowsPerStrip > ImageLength.
 
     """
-    filename = public_file('twelvemonkeys/tiff/lzw-full-12-bit-table.tif')
+    filename = _file('twelvemonkeys/tiff/lzw-full-12-bit-table.tif')
     with TiffFile(filename) as tif:
         assert len(tif.series) == 1
         assert len(tif.pages) == 1
@@ -7788,12 +7931,12 @@ def test_read_lzw_12bit_table():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_CODECS or SKIP_LARGE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS or SKIP_LARGE, reason=REASON)
 def test_read_lzw_large_buffer():
     """Test read LZW compression which requires large buffer."""
     # https://github.com/groupdocs-viewer/GroupDocs.Viewer-for-.NET-MVC-App
     # /issues/35
-    filename = private_file('lzw/lzw_large_buffer.tiff')
+    filename = _file('lzw/lzw_large_buffer.tiff')
     with TiffFile(filename) as tif:
         assert len(tif.pages) == 1
         page = tif.pages.first
@@ -7815,10 +7958,10 @@ def test_read_lzw_large_buffer():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_read_lzw_ycbcr_subsampling():
     """Test fail LZW compression with subsampling."""
-    filename = private_file('lzw/lzw_ycbcr_subsampling.tif')
+    filename = _file('lzw/lzw_ycbcr_subsampling.tif')
     with TiffFile(filename) as tif:
         assert len(tif.pages) == 1
         page = tif.pages.first
@@ -7835,10 +7978,10 @@ def test_read_lzw_ycbcr_subsampling():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_ycbcr_subsampling():
     """Test fail YCBCR with subsampling."""
-    filename = private_file('ycbcr_subsampling.tif')
+    filename = _file('ycbcr_subsampling.tif')
     with TiffFile(filename) as tif:
         assert len(tif.pages) == 2
         page = tif.pages.first
@@ -7856,12 +7999,12 @@ def test_read_ycbcr_subsampling():
 
 
 @pytest.mark.skipif(
-    SKIP_PRIVATE or SKIP_CODECS or not imagecodecs.JPEG.available,
+    SKIP_FILE or SKIP_CODECS or not imagecodecs.JPEG.available,
     reason=REASON,
 )
 def test_read_jpeg_baboon():
     """Test JPEG compression."""
-    filename = private_file('baboon.tiff')
+    filename = _file('baboon.tiff')
     with TiffFile(filename) as tif:
         assert tif.byteorder == '<'
         assert len(tif.pages) == 1
@@ -7890,12 +8033,12 @@ def test_read_jpeg_baboon():
 
 
 @pytest.mark.skipif(
-    SKIP_PRIVATE or SKIP_CODECS or not imagecodecs.JPEG.available,
+    SKIP_FILE or SKIP_CODECS or not imagecodecs.JPEG.available,
     reason=REASON,
 )
 def test_read_jpeg_ycbcr():
     """Test read YCBCR JPEG is returned as RGB."""
-    filename = private_file('jpeg/jpeg_ycbcr.tiff')
+    filename = _file('jpeg/jpeg_ycbcr.tiff')
     with TiffFile(filename) as tif:
         assert len(tif.pages) == 1
         page = tif.pages.first
@@ -7919,7 +8062,7 @@ def test_read_jpeg_ycbcr():
 
 
 @pytest.mark.skipif(
-    SKIP_PRIVATE or SKIP_CODECS or not imagecodecs.JPEG.available,
+    SKIP_FILE or SKIP_CODECS or not imagecodecs.JPEG.available,
     reason=REASON,
 )
 @pytest.mark.parametrize(
@@ -7927,7 +8070,7 @@ def test_read_jpeg_ycbcr():
 )
 def test_read_jpeg_cmyk(filename):
     """Test read JPEG compressed CMYK image."""
-    with TiffFile(private_file(f'pillow/{filename}')) as tif:
+    with TiffFile(_file(f'pillow/{filename}')) as tif:
         assert len(tif.pages) == 1
         page = tif.pages.first
         assert page.compression == COMPRESSION.JPEG
@@ -7944,13 +8087,13 @@ def test_read_jpeg_cmyk(filename):
 
 
 @pytest.mark.skipif(
-    SKIP_PRIVATE or SKIP_CODECS or not imagecodecs.JPEG8.available,
+    SKIP_FILE or SKIP_CODECS or not imagecodecs.JPEG8.available,
     reason=REASON,
 )
 def test_read_jpeg12_mandril():
     """Test read JPEG 12-bit compression."""
     # JPEG 12-bit
-    filename = private_file('jpeg/jpeg12_mandril.tif')
+    filename = _file('jpeg/jpeg12_mandril.tif')
     with TiffFile(filename) as tif:
         assert len(tif.pages) == 1
         page = tif.pages.first
@@ -7972,10 +8115,7 @@ def test_read_jpeg12_mandril():
 
 
 @pytest.mark.skipif(
-    SKIP_PRIVATE
-    or SKIP_CODECS
-    or SKIP_LARGE
-    or not imagecodecs.JPEG.available,
+    SKIP_FILE or SKIP_CODECS or SKIP_LARGE or not imagecodecs.JPEG.available,
     reason=REASON,
 )
 def test_read_jpeg_lsb2msb():
@@ -7984,7 +8124,7 @@ def test_read_jpeg_lsb2msb():
     Also test JPEG with RGB photometric.
 
     """
-    filename = private_file('large/jpeg_lsb2msb.tif')
+    filename = _file('large/jpeg_lsb2msb.tif')
     with TiffFile(filename) as tif:
         assert len(tif.pages) == 1
         page = tif.pages.first
@@ -8006,7 +8146,7 @@ def test_read_jpeg_lsb2msb():
 
 
 @pytest.mark.skipif(
-    SKIP_PRIVATE
+    SKIP_FILE
     or SKIP_CODECS
     or not imagecodecs.JPEG.available
     or not imagecodecs.JPEG2K.available,
@@ -8014,7 +8154,7 @@ def test_read_jpeg_lsb2msb():
 )
 def test_read_aperio_j2k():
     """Test read SVS slide with J2K compression."""
-    filename = private_file('slides/CMU-1-JP2K-33005.tif')
+    filename = _file('slides/CMU-1-JP2K-33005.tif')
     with TiffFile(filename) as tif:
         assert tif.is_svs
         assert len(tif.pages) == 6
@@ -8069,11 +8209,11 @@ def test_read_aperio_j2k():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_lzma():
     """Test read LZMA compression."""
     # 512x512, uint8, lzma compression
-    filename = private_file('lzma.tif')
+    filename = _file('lzma.tif')
     with TiffFile(filename) as tif:
         assert tif.byteorder == '<'
         assert len(tif.pages) == 1
@@ -8104,11 +8244,11 @@ def test_read_lzma():
 
 
 @pytest.mark.skipif(
-    SKIP_PUBLIC or SKIP_CODECS or not imagecodecs.WEBP.available, reason=REASON
+    SKIP_FILE or SKIP_CODECS or not imagecodecs.WEBP.available, reason=REASON
 )
 def test_read_webp():
     """Test read WebP compression."""
-    filename = public_file('GDAL/tif_webp.tif')
+    filename = _file('GDAL/tif_webp.tif')
     with TiffFile(filename) as tif:
         assert len(tif.pages) == 1
         page = tif.pages.first
@@ -8132,14 +8272,14 @@ def test_read_webp():
 
 
 @pytest.mark.skipif(
-    SKIP_PUBLIC or SKIP_CODECS or not imagecodecs.LERC.available, reason=REASON
+    SKIP_FILE or SKIP_CODECS or not imagecodecs.LERC.available, reason=REASON
 )
 def test_read_lerc():
     """Test read LERC compression."""
     if not hasattr(imagecodecs, 'LERC'):
         pytest.skip('LERC codec missing')
 
-    filename = public_file('imagecodecs/rgb.u2.lerc.tif')
+    filename = _file('imagecodecs/rgb.u2.lerc.tif')
     with TiffFile(filename) as tif:
         assert len(tif.pages) == 1
         page = tif.pages.first
@@ -8161,11 +8301,11 @@ def test_read_lerc():
 
 
 @pytest.mark.skipif(
-    SKIP_PUBLIC or SKIP_CODECS or not imagecodecs.ZSTD.available, reason=REASON
+    SKIP_FILE or SKIP_CODECS or not imagecodecs.ZSTD.available, reason=REASON
 )
 def test_read_zstd():
     """Test read ZStd compression."""
-    filename = public_file('GDAL/byte_zstd.tif')
+    filename = _file('GDAL/byte_zstd.tif')
     with TiffFile(filename) as tif:
         assert len(tif.pages) == 1
         page = tif.pages.first
@@ -8186,7 +8326,7 @@ def test_read_zstd():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_read_jetraw():
     """Test read Jetraw compression."""
     try:
@@ -8195,7 +8335,7 @@ def test_read_jetraw():
         # requires imagecodecs > 2022.22.2
         have_jetraw = False
 
-    filename = private_file('jetraw/16ms-1.p.tif')
+    filename = _file('jetraw/16ms-1.p.tif')
     with TiffFile(filename) as tif:
         assert len(tif.pages) == 1
         page = tif.pages.first
@@ -8215,12 +8355,11 @@ def test_read_jetraw():
         assert_aszarr_method(tif, image)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_read_pixtiff():
     """Test read PIXTIFF compression."""
     # https://github.com/haraldk/TwelveMonkeys/issues/307
-
-    filename = private_file('PIXTIFF/pixtiff_1bpp.tif')
+    filename = _file('PIXTIFF/pixtiff_1bpp.tif')
     with TiffFile(filename) as tif:
         page = tif.pages.first
         assert page.compression == COMPRESSION.PIXTIFF
@@ -8235,7 +8374,7 @@ def test_read_pixtiff():
         assert image.shape == (1313, 801)
         assert not image[1000, 700]
 
-    filename = private_file('PIXTIFF/pixtiff_4bpp.tif')
+    filename = _file('PIXTIFF/pixtiff_4bpp.tif')
     with TiffFile(filename) as tif:
         page = tif.pages.first
         assert page.compression == COMPRESSION.PIXTIFF
@@ -8250,7 +8389,7 @@ def test_read_pixtiff():
         assert image.shape == (1313, 801)
         assert image[1000, 700] == 6
 
-    filename = private_file('PIXTIFF/pixtiff_8bpp_rgb.tif')
+    filename = _file('PIXTIFF/pixtiff_8bpp_rgb.tif')
     with TiffFile(filename) as tif:
         page = tif.pages.first
         assert page.compression == COMPRESSION.PIXTIFF
@@ -8267,12 +8406,12 @@ def test_read_pixtiff():
 
 
 @pytest.mark.skipif(
-    SKIP_PRIVATE or SKIP_CODECS or not imagecodecs.LJPEG.available,
+    SKIP_FILE or SKIP_CODECS or not imagecodecs.LJPEG.available,
     reason=REASON,
 )
 def test_read_dng():
     """Test read JPEG compressed CFA image in SubIFD."""
-    filename = private_file('DNG/IMG_0793.DNG')
+    filename = _file('DNG/IMG_0793.DNG')
     with TiffFile(filename) as tif:
         assert len(tif.pages) == 1
         assert len(tif.series) == 2
@@ -8297,14 +8436,12 @@ def test_read_dng():
 
 
 @pytest.mark.skipif(
-    SKIP_PRIVATE or SKIP_CODECS or not imagecodecs.LJPEG.available,
+    SKIP_FILE or SKIP_CODECS or not imagecodecs.LJPEG.available,
     reason=REASON,
 )
 def test_read_cfa():
     """Test read 14-bit uncompressed and JPEG compressed CFA image."""
-    filename = private_file(
-        'DNG/cinemadng/M14-1451_000085_cDNG_uncompressed.dng'
-    )
+    filename = _file('DNG/cinemadng/M14-1451_000085_cDNG_uncompressed.dng')
     with TiffFile(filename) as tif:
         assert len(tif.pages) == 1
         page = tif.pages.first
@@ -8318,9 +8455,7 @@ def test_read_cfa():
         data = page.asarray()
         assert_aszarr_method(tif, data)
 
-    filename = private_file(
-        'DNG/cinemadng/M14-1451_000085_cDNG_compressed.dng'
-    )
+    filename = _file('DNG/cinemadng/M14-1451_000085_cDNG_compressed.dng')
     with TiffFile(filename) as tif:
         assert len(tif.pages) == 1
         page = tif.pages.first
@@ -8336,10 +8471,10 @@ def test_read_cfa():
         assert_aszarr_method(tif, data)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_read_lena_be_f16_contig():
     """Test read big endian float16 horizontal differencing."""
-    filename = private_file('PS/lena_be_f16_contig.tif')
+    filename = _file('PS/lena_be_f16_contig.tif')
     with TiffFile(filename) as tif:
         assert tif.byteorder == '>'
         assert len(tif.pages) == 1
@@ -8365,16 +8500,18 @@ def test_read_lena_be_f16_contig():
         assert data.flags['C_CONTIGUOUS']
         assert data.shape == (512, 512, 3)
         assert data.dtype == numpy.float16
-        assert_array_almost_equal(data[256, 256], (0.4563, 0.052856, 0.064819))
+        assert_allclose(
+            data[256, 256], (0.4563, 0.052856, 0.064819), rtol=1e-4
+        )
         assert_aszarr_method(tif, data, series=0)
         assert_decode_method(page)
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_read_lena_be_f16_lzw_planar():
     """Test read big endian, float16, LZW, horizontal differencing."""
-    filename = private_file('PS/lena_be_f16_lzw_planar.tif')
+    filename = _file('PS/lena_be_f16_lzw_planar.tif')
     with TiffFile(filename, is_imagej=False) as tif:
         assert tif.byteorder == '>'
         assert len(tif.pages) == 1
@@ -8401,18 +8538,18 @@ def test_read_lena_be_f16_lzw_planar():
         assert data.flags['C_CONTIGUOUS']
         assert data.shape == (3, 512, 512)
         assert data.dtype == numpy.float16
-        assert_array_almost_equal(
-            data[:, 256, 256], (0.4563, 0.052856, 0.064819)
+        assert_allclose(
+            data[:, 256, 256], (0.4563, 0.052856, 0.064819), rtol=1e-4
         )
         assert_aszarr_method(tif, data, series=0)
         assert_decode_method(page)
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_read_lena_be_f32_deflate_contig():
     """Test read big endian, float32 horizontal differencing, deflate."""
-    filename = private_file('PS/lena_be_f32_deflate_contig.tif')
+    filename = _file('PS/lena_be_f32_deflate_contig.tif')
     with TiffFile(filename, is_imagej=False) as tif:
         assert tif.byteorder == '>'
         assert len(tif.pages) == 1
@@ -8439,17 +8576,17 @@ def test_read_lena_be_f32_deflate_contig():
         assert data.flags['C_CONTIGUOUS']
         assert data.shape == (512, 512, 3)
         assert data.dtype == numpy.float32
-        assert_array_almost_equal(
-            data[256, 256], (0.456386, 0.052867, 0.064795)
+        assert_allclose(
+            data[256, 256], (0.456386, 0.052867, 0.064795), rtol=1e-5
         )
         assert_aszarr_method(tif, data, series=0)
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_read_lena_le_f32_lzw_planar():
     """Test read little endian, LZW, float32 horizontal differencing."""
-    filename = private_file('PS/lena_le_f32_lzw_planar.tif')
+    filename = _file('PS/lena_le_f32_lzw_planar.tif')
     with TiffFile(filename, is_imagej=False) as tif:
         assert tif.byteorder == '<'
         assert len(tif.pages) == 1
@@ -8476,17 +8613,17 @@ def test_read_lena_le_f32_lzw_planar():
         assert data.flags['C_CONTIGUOUS']
         assert data.shape == (3, 512, 512)
         assert data.dtype == numpy.float32
-        assert_array_almost_equal(
-            data[:, 256, 256], (0.456386, 0.052867, 0.064795)
+        assert_allclose(
+            data[:, 256, 256], (0.456386, 0.052867, 0.064795), rtol=1e-5
         )
         assert_aszarr_method(tif, data, series=0)
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_lena_be_rgb48():
     """Test read RGB48."""
-    filename = private_file('PS/lena_be_rgb48.tif')
+    filename = _file('PS/lena_be_rgb48.tif')
     with TiffFile(filename) as tif:
         assert tif.byteorder == '>'
         assert len(tif.pages) == 1
@@ -8517,11 +8654,11 @@ def test_read_lena_be_rgb48():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_LARGE or IS_PYPY, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_LARGE or IS_PYPY, reason=REASON)
 def test_read_huge_ps5_memmap():
     """Test read 30000x30000 float32 contiguous."""
     # TODO: segfault on pypy3.7-v7.3.5rc2-win64
-    filename = private_file('large/huge_ps5.tif')
+    filename = _file('large/huge_ps5.tif')
     with TiffFile(filename) as tif:
         assert tif.byteorder == '<'
         assert len(tif.pages) == 1
@@ -8555,10 +8692,10 @@ def test_read_huge_ps5_memmap():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC or SKIP_LARGE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_LARGE, reason=REASON)
 def test_read_movie():
     """Test read 30000 pages, uint16."""
-    filename = public_file('tifffile/movie.tif')
+    filename = _file('tifffile/movie.tif')
     with TiffFile(filename) as tif:
         assert tif.byteorder == '<'
         assert len(tif.pages) == 30000
@@ -8600,10 +8737,10 @@ def test_read_movie():
         assert__str__(tif, 0)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC or SKIP_LARGE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_LARGE, reason=REASON)
 def test_read_movie_memmap():
     """Test read 30000 pages memory-mapped."""
-    filename = public_file('tifffile/movie.tif')
+    filename = _file('tifffile/movie.tif')
     with TiffFile(filename) as tif:
         # assert data
         data = tif.asarray(out='memmap')
@@ -8617,10 +8754,10 @@ def test_read_movie_memmap():
         assert__str__(tif, 0)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC or SKIP_LARGE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_LARGE, reason=REASON)
 def test_read_100000_pages_movie():
     """Test read 100000x64x64 big endian in memory."""
-    filename = public_file('tifffile/100000_pages.tif')
+    filename = _file('tifffile/100000_pages.tif')
     with TiffFile(filename, _useframes=True) as tif:
         assert tif.is_imagej
         assert tif.byteorder == '>'
@@ -8667,15 +8804,16 @@ def test_read_100000_pages_movie():
         assert data.shape == (100000, 64, 64)
         assert data.dtype == numpy.uint16
         assert round(abs(data[7310, 25, 25] - 100), 7) == 0
-        # too slow: assert_aszarr_method(tif, data)
+        if not SKIP_SLOW:
+            assert_aszarr_method(tif, data)
         del data
         assert__str__(tif, 0)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC or SKIP_LARGE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_LARGE, reason=REASON)
 def test_read_chart_bl():
     """Test read 13228x18710, 1 bit, no bitspersample tag."""
-    filename = public_file('tifffile/chart_bl.tif')
+    filename = _file('tifffile/chart_bl.tif')
     with TiffFile(filename) as tif:
         assert tif.byteorder == '<'
         assert len(tif.pages) == 1
@@ -8707,10 +8845,10 @@ def test_read_chart_bl():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_LARGE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_LARGE, reason=REASON)
 def test_read_srtm_20_13():
     """Test read 6000x6000 int16 GDAL."""
-    filename = private_file('large/srtm_20_13.tif')
+    filename = _file('large/srtm_20_13.tif')
     with TiffFile(filename) as tif:
         assert tif.byteorder == '<'
         assert len(tif.pages) == 1
@@ -8745,10 +8883,10 @@ def test_read_srtm_20_13():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_CODECS or SKIP_LARGE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS or SKIP_LARGE, reason=REASON)
 def test_read_gel_scan():
     """Test read 6976x4992x3 uint8 LZW."""
-    filename = private_file('large/gel_1-scan2.tif')
+    filename = _file('large/gel_1-scan2.tif')
     with TiffFile(filename) as tif:
         assert tif.byteorder == '<'
         assert len(tif.pages) == 1
@@ -8779,10 +8917,10 @@ def test_read_gel_scan():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_caspian():
     """Test read 3x220x279 float64, RGB, deflate, GDAL."""
-    filename = public_file('juicypixels/caspian.tif')
+    filename = _file('juicypixels/caspian.tif')
     with TiffFile(filename) as tif:
         assert tif.byteorder == '<'
         assert len(tif.pages) == 1
@@ -8814,10 +8952,10 @@ def test_read_caspian():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_subifds_array():
     """Test read SubIFDs."""
-    filename = public_file('Tiff-Library-4J/IFD struct/SubIFDs array E.tif')
+    filename = _file('Tiff-Library-4J/IFD struct/SubIFDs array E.tif')
     with TiffFile(filename) as tif:
         assert len(tif.pages) == 1
 
@@ -8872,10 +9010,10 @@ def test_read_subifds_array():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_subifd4():
     """Test read BigTIFFSubIFD4."""
-    filename = public_file('twelvemonkeys/bigtiff/BigTIFFSubIFD4.tif')
+    filename = _file('twelvemonkeys/bigtiff/BigTIFFSubIFD4.tif')
     with TiffFile(filename) as tif:
         assert len(tif.series) == 1
         assert len(tif.pages) == 2
@@ -8904,10 +9042,10 @@ def test_read_subifd4():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_subifd8():
     """Test read BigTIFFSubIFD8."""
-    filename = public_file('twelvemonkeys/bigtiff/BigTIFFSubIFD8.tif')
+    filename = _file('twelvemonkeys/bigtiff/BigTIFFSubIFD8.tif')
     with TiffFile(filename) as tif:
         assert len(tif.series) == 1
         assert len(tif.pages) == 2
@@ -8974,14 +9112,12 @@ def test_read_tiles():
                     assert_array_equal(tile, next(segments)[0])
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_LARGE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_LARGE, reason=REASON)
 def test_read_lsm_mosaic():
     """Test read LSM: PTZCYX (Mosaic mode), two areas, 32 samples, >4 GB."""
     # LSM files are little endian with two series, one of which is reduced RGB
     # Tags may be unordered or contain bogus values
-    filename = private_file(
-        'lsm/Twoareas_Zstacks54slices_3umintervals_5cycles.lsm'
-    )
+    filename = _file('lsm/Twoareas_Zstacks54slices_3umintervals_5cycles.lsm')
     with TiffFile(filename) as tif:
         assert tif.is_lsm
         assert tif.byteorder == '<'
@@ -9022,15 +9158,16 @@ def test_read_lsm_mosaic():
         tags = tif.lsm_metadata['ScanInformation']
         assert tags['ScanMode'] == 'Stack'
         assert tags['User'] == 'lfdguest1'
-        # very slow: assert_aszarr_method(tif)
+        if not SKIP_SLOW:
+            assert_aszarr_method(tif)
         assert__str__(tif, 0)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_LARGE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_LARGE, reason=REASON)
 def test_read_lsm_carpet():
     """Test read LSM: TYX (time series x-y), 72000 pages."""
     # reads very slowly, ensure colormap is not applied
-    filename = private_file('lsm/Cardarelli_carpet_3.lsm')
+    filename = _file('lsm/Cardarelli_carpet_3.lsm')
     with TiffFile(filename) as tif:
         assert tif.is_lsm
         assert tif.byteorder == '<'
@@ -9077,12 +9214,11 @@ def test_read_lsm_carpet():
         assert__str__(tif, 0)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_LARGE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_LARGE, reason=REASON)
 def test_read_lsm_sfcs():
     """Test read LSM linescan: TX (time series y), 1 page."""
     # second page/series is corrupted: ImageLength=128 but StripByteCounts=1
-
-    filename = private_file('lsm/sFCS_780_2069Hz_3p94us.lsm')
+    filename = _file('lsm/sFCS_780_2069Hz_3p94us.lsm')
     with TiffFile(filename) as tif:
         assert tif.is_lsm
         assert tif.byteorder == '<'
@@ -9137,13 +9273,12 @@ def test_read_lsm_sfcs():
         assert__str__(tif, 0)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_LARGE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_LARGE, reason=REASON)
 def test_read_lsm_line_2channel():
     """Test read LSM point scan with 2 channels: CTX, 1 page."""
     # https://github.com/cgohlke/tifffile/issues/269
     # second page/series is corrupted: ImageLength=128 but StripByteCounts=1
-
-    filename = private_file('lsm/issue269.lsm')
+    filename = _file('lsm/issue269.lsm')
     with TiffFile(filename) as tif:
         assert tif.is_lsm
         assert tif.byteorder == '<'
@@ -9198,10 +9333,10 @@ def test_read_lsm_line_2channel():
         assert__str__(tif, 0)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_lsm_take1():
     """Test read LSM: TZCYX (Plane mode), single image, uint8."""
-    filename = private_file('lsm/take1.lsm')
+    filename = _file('lsm/take1.lsm')
     with TiffFile(filename) as tif:
         assert tif.is_lsm
         assert tif.byteorder == '<'
@@ -9276,10 +9411,10 @@ def test_read_lsm_take1():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_lsm_2chzt():
     """Test read LSM: ZCYX (Stack mode) uint8."""
-    filename = public_file('scif.io/2chZT.lsm')
+    filename = _file('scif.io/2chZT.lsm')
     with TiffFile(filename) as tif:
         assert tif.is_lsm
         assert tif.byteorder == '<'
@@ -9358,11 +9493,11 @@ def test_read_lsm_2chzt():
         assert__str__(tif, 0)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_lsm_unbounderror():
     """Test read LSM: MZSYX (196, 2, 33, 512, 512)."""
     # file is > 4GB with no time axis
-    filename = private_file('lsm/48h-CM-C-2.lsm')
+    filename = _file('lsm/48h-CM-C-2.lsm')
     with TiffFile(filename) as tif:
         assert tif.is_lsm
         assert tif.byteorder == '<'
@@ -9432,12 +9567,11 @@ def test_read_lsm_unbounderror():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_LARGE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_LARGE, reason=REASON)
 def test_read_lsm_incomplete(caplog):
     """Test read LSM: MZSYX (196, 2, 33, 512, 512)."""
     # file is ~18 GB incompletely written, dataoffsets zeroed
-    filename = private_file('lsm/NTERT_NM-50_x2.lsm')
-
+    filename = _file('lsm/NTERT_NM-50_x2.lsm')
     with TiffFile(filename) as tif:
         assert 'LSM file incompletely written' in caplog.text
         assert tif.is_lsm
@@ -9509,10 +9643,10 @@ def test_read_lsm_incomplete(caplog):
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_read_lsm_earpax2isl11():
     """Test read LSM: ZCYX (19, 3, 512, 512) uint8, RGB, LZW."""
-    filename = private_file('lsm/earpax2isl11.lzw.lsm')
+    filename = _file('lsm/earpax2isl11.lzw.lsm')
     with TiffFile(filename) as tif:
         assert tif.is_lsm
         assert tif.byteorder == '<'
@@ -9585,11 +9719,11 @@ def test_read_lsm_earpax2isl11():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC or SKIP_CODECS or SKIP_LARGE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS or SKIP_LARGE, reason=REASON)
 def test_read_lsm_mb231paxgfp_060214():
     """Test read LSM with many LZW compressed pages."""
     # TZCYX (Stack mode), (60, 31, 2, 512, 512), 3720
-    filename = public_file('tifffile/MB231paxgfp_060214.lzw.lsm')
+    filename = _file('tifffile/MB231paxgfp_060214.lzw.lsm')
     with TiffFile(filename) as tif:
         assert tif.is_lsm
         assert tif.byteorder == '<'
@@ -9649,13 +9783,13 @@ def test_read_lsm_mb231paxgfp_060214():
         assert__str__(tif, 0)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_read_lsm_lzw_no_eoi():
     """Test read LSM with LZW compressed strip without EOI."""
     # The first LZW compressed strip in page 834 has no EOI
     # such that too much data is returned from the decoder and
     # the data of the 2nd channel was getting corrupted
-    filename = public_file('tifffile/MB231paxgfp_060214.lzw.lsm')
+    filename = _file('tifffile/MB231paxgfp_060214.lzw.lsm')
     with TiffFile(filename) as tif:
         assert tif.is_lsm
         assert tif.byteorder == '<'
@@ -9680,11 +9814,11 @@ def test_read_lsm_lzw_no_eoi():
         assert__str__(tif, 0)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_stk_nonstack():
     """Test read MetaMorph STK with single plane."""
     # https://github.com/cgohlke/tifffile/pull/217
-    filename = private_file('stk/test_w1491-Fast_s1_t1.tif')
+    filename = _file('stk/test_w1491-Fast_s1_t1.tif')
     with TiffFile(filename) as tif:
         assert tif.is_stk
         assert tif.byteorder == '<'
@@ -9740,10 +9874,10 @@ def test_stk_nonstack():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_stk_zseries():
     """Test read MetaMorph STK z-series."""
-    filename = private_file('stk/zseries.stk')
+    filename = _file('stk/zseries.stk')
     with TiffFile(filename) as tif:
         assert tif.is_stk
         assert tif.byteorder == '<'
@@ -9797,10 +9931,10 @@ def test_read_stk_zseries():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_stk_zser24():
     """Test read MetaMorph STK RGB z-series."""
-    filename = private_file('stk/zser24.stk')
+    filename = _file('stk/zser24.stk')
     with TiffFile(filename) as tif:
         assert tif.is_stk
         assert tif.byteorder == '<'
@@ -9850,10 +9984,10 @@ def test_read_stk_zser24():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_stk_diatoms3d():
     """Test read MetaMorph STK time-series."""
-    filename = private_file('stk/diatoms3d.stk')
+    filename = _file('stk/diatoms3d.stk')
     with TiffFile(filename) as tif:
         assert tif.is_stk
         assert tif.byteorder == '<'
@@ -9904,11 +10038,11 @@ def test_read_stk_diatoms3d():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_stk_greenbeads():
     """Test read MetaMorph STK time-series, but time_created is corrupt (?)."""
     # 8bit palette is present but should not be applied
-    filename = private_file('stk/GreenBeads.stk')
+    filename = _file('stk/GreenBeads.stk')
     with TiffFile(filename) as tif:
         assert tif.is_stk
         assert tif.byteorder == '<'
@@ -9953,10 +10087,10 @@ def test_read_stk_greenbeads():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_stk_10xcalib():
     """Test read MetaMorph STK two planes, not Z or T series."""
-    filename = private_file('stk/10xcalib.stk')
+    filename = _file('stk/10xcalib.stk')
     with TiffFile(filename) as tif:
         assert tif.is_stk
         assert tif.byteorder == '<'
@@ -9996,10 +10130,10 @@ def test_read_stk_10xcalib():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_LARGE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_LARGE, reason=REASON)
 def test_read_stk_112508h100():
     """Test read MetaMorph STK large time-series."""
-    filename = private_file('stk/112508h100.stk')
+    filename = _file('stk/112508h100.stk')
     with TiffFile(filename) as tif:
         assert tif.is_stk
         assert tif.byteorder == '<'
@@ -10041,12 +10175,12 @@ def test_read_stk_112508h100():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_LARGE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_LARGE, reason=REASON)
 def test_read_stk_noname():
     """Test read MetaMorph STK with no name in metadata."""
     # https://forum.image.sc/t/metamorph-stack-issue-with-ome-metadata-
     # bioformats-and-omero/48416
-    filename = private_file('stk/60x_2well_diffexpos1_w1sdcGFP_s1_t1.stk')
+    filename = _file('stk/60x_2well_diffexpos1_w1sdcGFP_s1_t1.stk')
     with TiffFile(filename) as tif:
         assert tif.is_stk
         assert tif.byteorder == '<'
@@ -10086,12 +10220,12 @@ def test_read_stk_noname():
 
 
 @pytest.mark.skipif(
-    SKIP_PRIVATE or SKIP_CODECS or not imagecodecs.JPEG.available,
+    SKIP_FILE or SKIP_CODECS or not imagecodecs.JPEG.available,
     reason=REASON,
 )
 def test_read_ndpi_cmu1():
     """Test read Hamamatsu NDPI slide, JPEG."""
-    filename = private_file('HamamatsuNDPI/CMU-1.ndpi')
+    filename = _file('HamamatsuNDPI/CMU-1.ndpi')
     with TiffFile(filename) as tif:
         assert tif.is_ndpi
         assert len(tif.pages) == 5
@@ -10118,16 +10252,13 @@ def test_read_ndpi_cmu1():
 
 
 @pytest.mark.skipif(
-    SKIP_PRIVATE
-    or SKIP_CODECS
-    or SKIP_LARGE
-    or not imagecodecs.JPEG.available,
+    SKIP_FILE or SKIP_CODECS or SKIP_LARGE or not imagecodecs.JPEG.available,
     reason=REASON,
 )
 def test_read_ndpi_cmu2():
     """Test read Hamamatsu NDPI slide, JPEG."""
     # JPEG stream too large to be opened with unpatched libjpeg
-    filename = private_file('HamamatsuNDPI/CMU-2.ndpi')
+    filename = _file('HamamatsuNDPI/CMU-2.ndpi')
     with TiffFile(filename) as tif:
         assert tif.is_ndpi
         assert len(tif.pages) == 6
@@ -10159,15 +10290,12 @@ def test_read_ndpi_cmu2():
 
 
 @pytest.mark.skipif(
-    SKIP_LARGE
-    or SKIP_PRIVATE
-    or SKIP_CODECS
-    or not imagecodecs.JPEG.available,
+    SKIP_LARGE or SKIP_FILE or SKIP_CODECS or not imagecodecs.JPEG.available,
     reason=REASON,
 )
 def test_read_ndpi_4gb():
     """Test read > 4 GB Hamamatsu NDPI slide, JPEG 103680x188160."""
-    filename = private_file('HamamatsuNDPI/103680x188160.ndpi')
+    filename = _file('HamamatsuNDPI/103680x188160.ndpi')
     with TiffFile(filename) as tif:
         assert tif.is_ndpi
         assert len(tif.pages) == 8
@@ -10234,13 +10362,13 @@ def test_read_ndpi_4gb():
 
 
 @pytest.mark.skipif(
-    SKIP_PRIVATE or SKIP_CODECS or not imagecodecs.JPEGXR.available,
+    SKIP_FILE or SKIP_CODECS or not imagecodecs.JPEGXR.available,
     reason=REASON,
 )
 def test_read_ndpi_jpegxr():
     """Test read Hamamatsu NDPI slide with JPEG XR compression."""
     # https://downloads.openmicroscopy.org/images/Hamamatsu-NDPI/hamamatsu/
-    filename = private_file('HamamatsuNDPI/DM0014 - 2020-04-02 10.25.21.ndpi')
+    filename = _file('HamamatsuNDPI/DM0014 - 2020-04-02 10.25.21.ndpi')
     with TiffFile(filename) as tif:
         assert tif.is_ndpi
         assert len(tif.pages) == 6
@@ -10297,16 +10425,13 @@ def test_read_ndpi_jpegxr():
 
 
 @pytest.mark.skipif(
-    SKIP_PRIVATE
-    or SKIP_LARGE
-    or SKIP_CODECS
-    or not imagecodecs.JPEG.available,
+    SKIP_FILE or SKIP_LARGE or SKIP_CODECS or not imagecodecs.JPEG.available,
     reason=REASON,
 )
 def test_read_ndpi_databytecounts():
     """Test read Hamamatsu NDPI slide databytecounts do not overflow."""
     # https://forum.image.sc/t/some-ndpi-files-not-opening-in-qupath-v0-4-1
-    filename = private_file('HamamatsuNDPI/doesnt_work.ndpi')
+    filename = _file('HamamatsuNDPI/doesnt_work.ndpi')
     with TiffFile(filename) as tif:
         assert tif.is_ndpi
         assert len(tif.pages) == 23
@@ -10339,12 +10464,12 @@ def test_read_ndpi_databytecounts():
 
 
 @pytest.mark.skipif(
-    SKIP_PRIVATE or SKIP_CODECS or not imagecodecs.JPEG.available,
+    SKIP_FILE or SKIP_CODECS or not imagecodecs.JPEG.available,
     reason=REASON,
 )
 def test_read_ndpi_layers():
     """Test read Hamamatsu NDPI slide with 5 layers."""
-    filename = private_file('HamamatsuNDPI/hamamatsu_5-layers.ndpi')
+    filename = _file('HamamatsuNDPI/hamamatsu_5-layers.ndpi')
     with TiffFile(filename) as tif:
         assert tif.is_ndpi
         assert len(tif.pages) == 37
@@ -10412,12 +10537,12 @@ def test_read_ndpi_layers():
 
 
 @pytest.mark.skipif(
-    SKIP_PRIVATE or SKIP_CODECS or not imagecodecs.JPEG.available,
+    SKIP_FILE or SKIP_CODECS or not imagecodecs.JPEG.available,
     reason=REASON,
 )
 def test_read_svs_cmu1():
     """Test read Aperio SVS slide, JPEG and LZW."""
-    filename = private_file('AperioSVS/CMU-1.svs')
+    filename = _file('AperioSVS/CMU-1.svs')
     with TiffFile(filename) as tif:
         assert tif.is_svs
         assert not tif.is_scanimage
@@ -10451,12 +10576,12 @@ def test_read_svs_cmu1():
 
 
 @pytest.mark.skipif(
-    SKIP_PRIVATE or SKIP_CODECS or not imagecodecs.JPEG2K.available,
+    SKIP_FILE or SKIP_CODECS or not imagecodecs.JPEG2K.available,
     reason=REASON,
 )
 def test_read_svs_jp2k_33003_1():
     """Test read Aperio SVS slide, JP2000 and LZW."""
-    filename = private_file('AperioSVS/JP2K-33003-1.svs')
+    filename = _file('AperioSVS/JP2K-33003-1.svs')
     with TiffFile(filename) as tif:
         assert tif.is_svs
         assert not tif.is_scanimage
@@ -10489,12 +10614,12 @@ def test_read_svs_jp2k_33003_1():
 
 
 @pytest.mark.skipif(
-    SKIP_PRIVATE or SKIP_CODECS or not imagecodecs.JPEG.available,
+    SKIP_FILE or SKIP_CODECS or not imagecodecs.JPEG.available,
     reason=REASON,
 )
 def test_read_bif(caplog):
     """Test read Ventana BIF slide."""
-    filename = private_file('VentanaBIF/OS-2.bif')
+    filename = _file('VentanaBIF/OS-2.bif')
     with TiffFile(filename) as tif:
         assert tif.is_bif
         assert len(tif.pages) == 12
@@ -10538,17 +10663,14 @@ def test_read_bif(caplog):
 
 
 @pytest.mark.skipif(
-    SKIP_PRIVATE
-    or SKIP_LARGE
-    or SKIP_CODECS
-    or not imagecodecs.JPEG.available,
+    SKIP_FILE or SKIP_LARGE or SKIP_CODECS or not imagecodecs.JPEG.available,
     reason=REASON,
 )
 def test_read_scn_collection():
     """Test read Leica SCN slide, JPEG."""
     # collection of 43 CZYX images
     # https://forum.image.sc/t/43585
-    filename = private_file(
+    filename = _file(
         'LeicaSCN/19-3-12_b5992c2e-5b6e-46f2-bf9b-d5872bdebdc1.SCN'
     )
     with TiffFile(filename) as tif:
@@ -10578,10 +10700,10 @@ def test_read_scn_collection():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_scanimage_metadata():
     """Test read ScanImage metadata."""
-    filename = private_file('ScanImage/TS_UnitTestImage_BigTIFF.tif')
+    filename = _file('ScanImage/TS_UnitTestImage_BigTIFF.tif')
     with open(filename, 'rb') as fh:
         frame_data, roi_data, version = read_scanimage_metadata(fh)
     assert version == 3
@@ -10589,11 +10711,11 @@ def test_read_scanimage_metadata():
     assert roi_data['RoiGroups']['imagingRoiGroup']['ver'] == 1
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_scanimage_2021():
     """Test read ScanImage metadata."""
     # https://github.com/cgohlke/tifffile/issues/46
-    filename = private_file('ScanImage/ScanImage2021_3frames.tif')
+    filename = _file('ScanImage/ScanImage2021_3frames.tif')
     with open(filename, 'rb') as fh:
         frame_data, roi_data, version = read_scanimage_metadata(fh)
     assert frame_data['SI.hChannels.channelType'] == [
@@ -10631,10 +10753,10 @@ def test_read_scanimage_2021():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_scanimage_no_framedata():
     """Test read ScanImage no FrameData."""
-    filename = private_file('ScanImage/PSF001_ScanImage36.tif')
+    filename = _file('ScanImage/PSF001_ScanImage36.tif')
     with TiffFile(filename) as tif:
         assert tif.is_scanimage
         assert len(tif.pages) == 100
@@ -10657,14 +10779,14 @@ def test_read_scanimage_no_framedata():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_LARGE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_LARGE, reason=REASON)
 def test_read_scanimage_2gb():
     """Test read ScanImage non-BigTIFF > 2 GB.
 
     https://github.com/MouseLand/suite2p/issues/149
 
     """
-    filename = private_file('ScanImage/M161209TH_01__001.tif')
+    filename = _file('ScanImage/M161209TH_01__001.tif')
     with TiffFile(filename) as tif:
         assert tif.is_scanimage
         assert len(tif.pages) == 5980
@@ -10707,15 +10829,18 @@ def test_read_scanimage_2gb():
         assert data[256, 256] == 71
         data = tif.asarray()
         assert data[5979, 256, 256] == 71
-        assert_aszarr_method(tif, data)
+        if not SKIP_SLOW:
+            assert_aszarr_method(tif, data)
+        else:
+            assert_aszarr_method(frame, frame.asarray())
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_scanimage_bigtiff():
     """Test read ScanImage BigTIFF."""
     # https://github.com/cgohlke/tifffile/issues/29
-    filename = private_file('ScanImage/area1__00001.tif')
+    filename = _file('ScanImage/area1__00001.tif')
     with TiffFile(filename) as tif:
         assert tif.is_scanimage
         assert len(tif.pages) == 162
@@ -10749,13 +10874,13 @@ def test_read_scanimage_bigtiff():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_ome_single_channel():
     """Test read OME image."""
     # 2D (single image)
     # OME-TIFF reference images from
     # https://www.openmicroscopy.org/site/support/ome-model/ome-tiff
-    filename = public_file('OME/bioformats-artificial/single-channel.ome.tif')
+    filename = _file('OME/bioformats-artificial/single-channel.ome.tif')
     with TiffFile(filename) as tif:
         assert tif.is_ome
         assert tif.byteorder == '>'
@@ -10789,11 +10914,11 @@ def test_read_ome_single_channel():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_ome_multi_channel():
     """Test read OME multi channel image."""
     # 2D (3 channels)
-    filename = public_file('OME/bioformats-artificial/multi-channel.ome.tiff')
+    filename = _file('OME/bioformats-artificial/multi-channel.ome.tiff')
     with TiffFile(filename) as tif:
         assert tif.is_ome
         assert tif.byteorder == '>'
@@ -10830,11 +10955,11 @@ def test_read_ome_multi_channel():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_ome_z_series():
     """Test read OME volume."""
     # 3D (5 focal planes)
-    filename = public_file('OME/bioformats-artificial/z-series.ome.tif')
+    filename = _file('OME/bioformats-artificial/z-series.ome.tif')
     with TiffFile(filename) as tif:
         assert tif.is_ome
         assert tif.byteorder == '>'
@@ -10868,11 +10993,11 @@ def test_read_ome_z_series():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_ome_multi_channel_z_series():
     """Test read OME multi-channel volume."""
     # 3D (5 focal planes, 3 channels)
-    filename = public_file(
+    filename = _file(
         'OME/bioformats-artificial/multi-channel-z-series.ome.tiff'
     )
     with TiffFile(filename) as tif:
@@ -10908,11 +11033,11 @@ def test_read_ome_multi_channel_z_series():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_ome_time_series():
     """Test read OME time-series of images."""
     # 3D (7 time points)
-    filename = public_file('OME/bioformats-artificial/time-series.ome.tiff')
+    filename = _file('OME/bioformats-artificial/time-series.ome.tiff')
     with TiffFile(filename) as tif:
         assert tif.is_ome
         assert tif.byteorder == '>'
@@ -10946,11 +11071,11 @@ def test_read_ome_time_series():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_ome_multi_channel_time_series():
     """Test read OME time-series of multi-channel images."""
     # 3D (7 time points, 3 channels)
-    filename = public_file(
+    filename = _file(
         'OME/bioformats-artificial/multi-channel-time-series.ome.tiff'
     )
     with TiffFile(filename) as tif:
@@ -10989,11 +11114,11 @@ def test_read_ome_multi_channel_time_series():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_ome_4d_series():
     """Test read OME time-series of volumes."""
     # 4D (7 time points, 5 focal planes)
-    filename = public_file('OME/bioformats-artificial/4D-series.ome.tiff')
+    filename = _file('OME/bioformats-artificial/4D-series.ome.tiff')
     with TiffFile(filename) as tif:
         assert tif.is_ome
         assert tif.byteorder == '>'
@@ -11025,11 +11150,11 @@ def test_read_ome_4d_series():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_ome_multi_channel_4d_series():
     """Test read OME time-series of multi-channel volumes."""
     # 4D (7 time points, 5 focal planes, 3 channels)
-    filename = public_file(
+    filename = _file(
         'OME/bioformats-artificial/multi-channel-4D-series.ome.tiff'
     )
     with TiffFile(filename) as tif:
@@ -11068,10 +11193,10 @@ def test_read_ome_multi_channel_4d_series():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_ome_modulo_flim():
     """Test read OME modulo FLIM."""
-    filename = public_file('OME/modulo/FLIM-ModuloAlongC.ome.tiff')
+    filename = _file('OME/modulo/FLIM-ModuloAlongC.ome.tiff')
     with TiffFile(filename) as tif:
         assert tif.is_ome
         assert tif.byteorder == '>'
@@ -11108,11 +11233,11 @@ def test_read_ome_modulo_flim():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_ome_modulo_flim_tcspc():
     """Test read OME modulo FLIM TSCPC."""
     # Two channels each recorded at two timepoints and eight histogram bins
-    filename = public_file('OME/modulo/FLIM-ModuloAlongT-TSCPC.ome.tiff')
+    filename = _file('OME/modulo/FLIM-ModuloAlongT-TSCPC.ome.tiff')
     with TiffFile(filename) as tif:
         assert tif.is_ome
         assert tif.byteorder == '<'
@@ -11144,11 +11269,11 @@ def test_read_ome_modulo_flim_tcspc():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_ome_modulo_spim():
     """Test read OME modulo SPIM."""
     # 2x2 tile of planes each recorded at 4 angles
-    filename = public_file('OME/modulo/SPIM-ModuloAlongZ.ome.tiff')
+    filename = _file('OME/modulo/SPIM-ModuloAlongZ.ome.tiff')
     with TiffFile(filename) as tif:
         assert tif.is_ome
         assert tif.byteorder == '<'
@@ -11180,14 +11305,12 @@ def test_read_ome_modulo_spim():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_ome_modulo_lambda():
     """Test read OME modulo LAMBDA."""
     # Excitation of 5 wavelength [big-lambda] each recorded at 10 emission
     # wavelength ranges [lambda].
-    filename = public_file(
-        'OME/modulo/LAMBDA-ModuloAlongZ-ModuloAlongT.ome.tiff'
-    )
+    filename = _file('OME/modulo/LAMBDA-ModuloAlongZ-ModuloAlongT.ome.tiff')
     with TiffFile(filename) as tif:
         assert tif.is_ome
         assert tif.byteorder == '<'
@@ -11219,12 +11342,10 @@ def test_read_ome_modulo_lambda():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_ome_multiimage_pixels():
     """Test read OME with three image series."""
-    filename = public_file(
-        'OME/bioformats-artificial/multi-image-pixels.ome.tif'
-    )
+    filename = _file('OME/bioformats-artificial/multi-image-pixels.ome.tif')
     with TiffFile(filename) as tif:
         assert tif.is_ome
         assert tif.byteorder == '>'
@@ -11260,10 +11381,10 @@ def test_read_ome_multiimage_pixels():
             assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_ome_multiimage_nouuid():
     """Test read single-file, multi-image OME without UUID."""
-    filename = private_file(
+    filename = _file(
         'OMETIFF.jl/singles/181003_multi_pos_time_course_1_MMStack.ome.tif'
     )
     with TiffFile(filename, is_mmstack=False) as tif:
@@ -11303,10 +11424,10 @@ def test_read_ome_multiimage_nouuid():
             assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_ome_zen_2chzt():
     """Test read OME time-series of two-channel volumes by ZEN 2011."""
-    filename = private_file('OME/zen_2chzt.ome.tiff')
+    filename = _file('OME/zen_2chzt.ome.tiff')
     with TiffFile(filename) as tif:
         assert tif.is_ome
         assert tif.byteorder == '<'
@@ -11338,11 +11459,11 @@ def test_read_ome_zen_2chzt():
         assert__str__(tif, 0)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC or SKIP_LARGE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_LARGE, reason=REASON)
 def test_read_ome_multifile():
     """Test read OME CTZYX series in 86 files."""
     # (2, 43, 10, 512, 512) CTZYX uint8 in 86 files, 10 pages each
-    filename = public_file('OME/tubhiswt-4D/tubhiswt_C0_TP10.ome.tif')
+    filename = _file('OME/tubhiswt-4D/tubhiswt_C0_TP10.ome.tif')
     with TiffFile(filename) as tif:
         assert tif.is_ome
         assert tif.byteorder == '<'
@@ -11379,7 +11500,8 @@ def test_read_ome_multifile():
         assert tif.filehandle._fh
         assert__str__(tif)
         # test aszarr
-        assert_aszarr_method(tif, data)
+        if not SKIP_SLOW:
+            assert_aszarr_method(tif, data)
         assert_aszarr_method(tif, data, chunkmode='page')
         del data
         # assert other files are still closed after ZarrStore.close
@@ -11395,11 +11517,11 @@ def test_read_ome_multifile():
     #         self.assertTrue(page.parent.filehandle._fh)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_LARGE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_LARGE, reason=REASON)
 def test_read_ome_multifile_missing(caplog):
     """Test read OME referencing missing files."""
     # (2, 43, 10, 512, 512) CTZYX uint8, 85 files missing
-    filename = private_file('OME/tubhiswt_C0_TP34.ome.tif')
+    filename = _file('OME/tubhiswt_C0_TP34.ome.tif')
     with TiffFile(filename) as tif:
         assert tif.is_ome
         assert tif.byteorder == '<'
@@ -11433,17 +11555,18 @@ def test_read_ome_multifile_missing(caplog):
         assert data.dtype == numpy.uint8
         assert data[0, 34, 4, 303, 206] == 82
         assert data[1, 25, 2, 425, 272] == 196
-        assert_aszarr_method(tif, data)
+        if not SKIP_SLOW:
+            assert_aszarr_method(tif, data)
         assert_aszarr_method(tif, data, chunkmode='page')
         del data
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_LARGE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_LARGE, reason=REASON)
 def test_read_ome_multifile_bytesio(caplog):
     """Test read OME multifile series with BinaryIO."""
     # (2, 43, 10, 512, 512) CTZYX uint8, 85 files missing
-    filename = private_file('OME/tubhiswt_C0_TP34.ome.tif')
+    filename = _file('OME/tubhiswt_C0_TP34.ome.tif')
     with open(filename, 'rb') as fh:
         bytesio = BytesIO(fh.read())
     with TiffFile(bytesio) as tif:
@@ -11478,17 +11601,18 @@ def test_read_ome_multifile_bytesio(caplog):
         assert data.dtype == numpy.uint8
         assert data[0, 34, 4, 303, 206] == 82
         assert data[1, 25, 2, 425, 272] == 0
-        assert_aszarr_method(tif, data, mode='r')
+        if not SKIP_SLOW:
+            assert_aszarr_method(tif, data, mode='r')
         del data
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_LARGE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_LARGE, reason=REASON)
 def test_read_ome_multifile_pyramidal():
     """Test read OME pyramidal series in 35 files."""
     # (35, 27328, 54002), 7 levels, CYX uint16 in 35 files, 1 page each
     # https://forum.image.sc/t/119259
-    filename = private_file(
+    filename = _file(
         'OME/multi-file-pyramid/morphology_focus/ch0000_dapi.ome.tif'
     )
     with TiffFile(filename) as tif:
@@ -11553,10 +11677,10 @@ def test_read_ome_multifile_pyramidal():
             assert bool(page.parent.filehandle._fh) == (page.parent == tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_ome_companion(caplog):
     """Test read multifile OME-TIFF using companion file."""
-    filename = private_file('OME/companion/multifile-Z2.ome.tiff')
+    filename = _file('OME/companion/multifile-Z2.ome.tiff')
     with TiffFile(filename) as tif:
         assert tif.is_ome
         with caplog.at_level(logging.DEBUG):
@@ -11564,7 +11688,7 @@ def test_read_ome_companion(caplog):
             assert 'OME series is BinaryOnly' in caplog.text
 
     with open(
-        private_file('OME/companion/multifile.companion.ome'), encoding='utf-8'
+        _file('OME/companion/multifile.companion.ome'), encoding='utf-8'
     ) as fh:
         omexml = fh.read()
     with TiffFile(filename, omexml=omexml) as tif:
@@ -11573,16 +11697,16 @@ def test_read_ome_companion(caplog):
         assert series.kind == 'ome'
         image = series.asarray()
 
-    filename = private_file('OME/companion/multifile-Z1.ome.tiff')
+    filename = _file('OME/companion/multifile-Z1.ome.tiff')
     image2 = imread(filename)
     assert_array_equal(image, image2)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_ome_rgb():
     """Test read OME RGB image."""
     # https://github.com/openmicroscopy/bioformats/pull/1986
-    filename = private_file('OME/test_rgb.ome.tif')
+    filename = _file('OME/test_rgb.ome.tif')
     with TiffFile(filename) as tif:
         assert tif.is_ome
         assert tif.byteorder == '<'
@@ -11615,11 +11739,11 @@ def test_read_ome_rgb():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_read_ome_samplesperpixel():
     """Test read OME image stack with SamplesPerPixel>1."""
     # Reported by Grzegorz Bokota on 2019.1.30
-    filename = private_file('OME/test_samplesperpixel.ome.tif')
+    filename = _file('OME/test_samplesperpixel.ome.tif')
     with TiffFile(filename) as tif:
         assert tif.is_ome
         assert tif.byteorder == '>'
@@ -11650,11 +11774,11 @@ def test_read_ome_samplesperpixel():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_ome_float_modulo_attributes():
     """Test read OME with floating point modulo attributes."""
     # reported by Start Berg. File by Lorenz Maier.
-    filename = private_file('OME/float_modulo_attributes.ome.tiff')
+    filename = _file('OME/float_modulo_attributes.ome.tiff')
     with TiffFile(filename) as tif:
         assert tif.is_ome
         assert tif.byteorder == '>'
@@ -11687,14 +11811,14 @@ def test_read_ome_float_modulo_attributes():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_ome_cropped(caplog):
     """Test read bad OME by ImageJ cropping."""
     # ImageJ produces invalid ome-xml when cropping
     # http://lists.openmicroscopy.org.uk/pipermail/ome-devel/2013-December
     #  /002631.html
     # Reported by Hadrien Mary on Dec 11, 2013
-    filename = private_file('ome/cropped.ome.tif')
+    filename = _file('ome/cropped.ome.tif')
     with TiffFile(filename) as tif:
         assert tif.is_ome
         assert tif.byteorder == '<'
@@ -11725,11 +11849,11 @@ def test_read_ome_cropped(caplog):
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_CODECS or SKIP_LARGE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS or SKIP_LARGE, reason=REASON)
 def test_read_ome_corrupted_page(caplog):
     """Test read OME with corrupted but not referenced page."""
     # https://forum.image.sc/t/qupath-0-2-0-not-able-to-open-ome-tiff/23821/3
-    filename = private_file('ome/2019_02_19__7760_s1.ome.tiff')
+    filename = _file('ome/2019_02_19__7760_s1.ome.tiff')
     with TiffFile(filename) as tif:
         assert tif.is_ome
         assert tif.is_bigtiff
@@ -11760,12 +11884,12 @@ def test_read_ome_corrupted_page(caplog):
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_ome_nikon():
     """Test read bad OME by Nikon."""
     # OME-XML references only first image
     # received from E. Gratton
-    filename = private_file('OME/Nikon-cell011.ome.tif')
+    filename = _file('OME/Nikon-cell011.ome.tif')
     with TiffFile(filename) as tif:
         assert tif.is_ome
         assert tif.byteorder == '<'
@@ -11813,12 +11937,12 @@ def test_read_ome_nikon():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_ome_shape_mismatch(caplog):
     """Test read OME with page shape mismatch."""
     # TCX (20000, 2, 500) is stored in 2 pages of (20000, 500)
     # probably exported by ZEN Software
-    filename = private_file('OME/Image 7.ome_h00.tiff')
+    filename = _file('OME/Image 7.ome_h00.tiff')
     with TiffFile(filename) as tif:
         assert tif.is_ome
         assert tif.byteorder == '<'
@@ -11850,12 +11974,12 @@ def test_read_ome_shape_mismatch(caplog):
 
 
 @pytest.mark.skipif(
-    SKIP_PRIVATE or SKIP_CODECS or not imagecodecs.JPEG2K.available,
+    SKIP_FILE or SKIP_CODECS or not imagecodecs.JPEG2K.available,
     reason=REASON,
 )
 def test_read_ome_jpeg2000_be():
     """Test read JPEG2000 compressed big-endian OME-TIFF."""
-    filename = private_file('OME/mitosis.jpeg2000.ome.tif')
+    filename = _file('OME/mitosis.jpeg2000.ome.tif')
     with TiffFile(filename) as tif:
         assert tif.is_ome
         assert tif.byteorder == '>'
@@ -11887,11 +12011,11 @@ def test_read_ome_jpeg2000_be():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_read_ome_samplesperpixel_mismatch(caplog):
     """Test read OME with SamplesPerPixel mismatch: OME=1, TIFF=4."""
     # https://forum.image.sc/t/ilastik-refuses-to-load-image-file/48541/1
-    filename = private_file('OME/MismatchSamplesPerPixel.ome.tif')
+    filename = _file('OME/MismatchSamplesPerPixel.ome.tif')
     with TiffFile(filename) as tif:
         assert tif.is_ome
         assert tif.byteorder == '<'
@@ -11920,11 +12044,11 @@ def test_read_ome_samplesperpixel_mismatch(caplog):
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC or SKIP_ZARR, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_ZARR, reason=REASON)
 @pytest.mark.parametrize('chunkmode', [0, 2])
 def test_read_ome_multiscale(chunkmode):
     """Test read pyramidal OME file."""
-    filename = public_file('tifffile/multiscene_pyramidal.ome.tif')
+    filename = _file('tifffile/multiscene_pyramidal.ome.tif')
     with TiffFile(filename) as tif:
         assert tif.is_ome
         assert tif.byteorder == '<'
@@ -11960,11 +12084,11 @@ def test_read_ome_multiscale(chunkmode):
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_andor_light_sheet_512p():
     """Test read Andor."""
     # 12113x13453, uint16
-    filename = private_file('andor/light sheet 512px.tif')
+    filename = _file('andor/light sheet 512px.tif')
     with TiffFile(filename) as tif:
         assert tif.byteorder == '<'
         assert len(tif.pages) == 100
@@ -12000,11 +12124,11 @@ def test_read_andor_light_sheet_512p():
         assert__str__(tif, 0)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_nih_morph():
     """Test read NIH."""
     # 388x252 uint8
-    filename = private_file('nihimage/morph.tiff')
+    filename = _file('nihimage/morph.tiff')
     with TiffFile(filename) as tif:
         assert tif.is_nih
         assert tif.byteorder == '>'
@@ -12038,11 +12162,11 @@ def test_read_nih_morph():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_nih_silver_lake():
     """Test read NIH palette."""
     # 259x187 16 bit palette
-    filename = private_file('nihimage/silver lake.tiff')
+    filename = _file('nihimage/silver lake.tiff')
     with TiffFile(filename) as tif:
         assert tif.is_nih
         assert tif.byteorder == '>'
@@ -12076,11 +12200,11 @@ def test_read_nih_silver_lake():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_nih_scala_media():
     """Test read multi-page NIH."""
     # 36x54x84 palette
-    filename = private_file('nihimage/scala-media.tif')
+    filename = _file('nihimage/scala-media.tif')
     with TiffFile(filename) as tif:
         assert tif.is_nih
         assert tif.byteorder == '>'
@@ -12114,10 +12238,10 @@ def test_read_nih_scala_media():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_read_imagej_rrggbb():
     """Test read planar RGB ImageJ file created by Bio-Formats."""
-    filename = public_file('tifffile/rrggbb.ij.tif')
+    filename = _file('tifffile/rrggbb.ij.tif')
     with TiffFile(filename) as tif:
         assert tif.is_imagej
         assert tif.byteorder == '<'
@@ -12165,10 +12289,10 @@ def test_read_imagej_rrggbb():
         assert__str__(tif, 0)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_imagej_focal1():
     """Test read ImageJ 205x434x425 uint8."""
-    filename = private_file('imagej/focal1.tif')
+    filename = _file('imagej/focal1.tif')
     with TiffFile(filename) as tif:
         assert tif.is_imagej
         assert tif.byteorder == '>'
@@ -12208,10 +12332,10 @@ def test_read_imagej_focal1():
         assert__str__(tif, 0)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_imagej_hela_cells():
     """Test read ImageJ 512x672 RGB uint16."""
-    filename = private_file('imagej/hela-cells.tif')
+    filename = _file('imagej/hela-cells.tif')
     with TiffFile(filename) as tif:
         assert tif.is_imagej
         assert tif.byteorder == '>'
@@ -12252,10 +12376,10 @@ def test_read_imagej_hela_cells():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_imagej_flybrain():
     """Test read ImageJ 57x256x256 RGB."""
-    filename = private_file('imagej/flybrain.tif')
+    filename = _file('imagej/flybrain.tif')
     with TiffFile(filename) as tif:
         assert tif.is_imagej
         assert tif.byteorder == '>'
@@ -12295,10 +12419,10 @@ def test_read_imagej_flybrain():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_imagej_confocal_series():
     """Test read ImageJ 25x2x400x400 ZCYX."""
-    filename = private_file('imagej/confocal-series.tif')
+    filename = _file('imagej/confocal-series.tif')
     with TiffFile(filename) as tif:
         assert tif.is_imagej
         assert tif.byteorder == '>'
@@ -12333,15 +12457,13 @@ def test_read_imagej_confocal_series():
         assert data.dtype == numpy.uint8
         assert tuple(data[12, :, 100, 300]) == (6, 66)
         # assert only two pages are loaded
-        with pytest.warns(DeprecationWarning):
-            assert isinstance(tif.pages.pages[0], TiffPage)
-        assert isinstance(tif.pages._pages[0], TiffPage)
+        assert isinstance(tif.pages._loaded[0], TiffPage)
         if tif.pages.cache:
-            assert isinstance(tif.pages._pages[1], TiffFrame)
+            assert isinstance(tif.pages._loaded[1], TiffFrame)
         else:
-            assert tif.pages._pages[1] == 8000911
-        assert tif.pages._pages[2] == 8001073
-        assert tif.pages._pages[-1] == 8008687
+            assert tif.pages._offsets[1] == 8000911
+        assert tif.pages._offsets[2] == 8001073
+        assert tif.pages._offsets[-1] == 8008687
         assert_aszarr_method(series, data)
         assert_aszarr_method(series, data, chunkmode='page')
         # don't squeeze
@@ -12351,10 +12473,10 @@ def test_read_imagej_confocal_series():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_imagej_graphite():
     """Test read ImageJ 1024x593 float32."""
-    filename = private_file('imagej/graphite1-1024.tif')
+    filename = _file('imagej/graphite1-1024.tif')
     with TiffFile(filename) as tif:
         assert tif.is_imagej
         assert tif.byteorder == '>'
@@ -12394,10 +12516,10 @@ def test_read_imagej_graphite():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_imagej_bat_cochlea_volume():
     """Test read ImageJ 114 images, no frames, slices, channels specified."""
-    filename = private_file('imagej/bat-cochlea-volume.tif')
+    filename = _file('imagej/bat-cochlea-volume.tif')
     with TiffFile(filename) as tif:
         assert tif.is_imagej
         assert tif.byteorder == '>'
@@ -12437,10 +12559,10 @@ def test_read_imagej_bat_cochlea_volume():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_imagej_first_instar_brain():
     """Test read ImageJ 56x256x256x3 ZYXS."""
-    filename = private_file('imagej/first-instar-brain.tif')
+    filename = _file('imagej/first-instar-brain.tif')
     with TiffFile(filename) as tif:
         assert tif.is_imagej
         assert tif.byteorder == '>'
@@ -12477,10 +12599,10 @@ def test_read_imagej_first_instar_brain():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_imagej_fluorescentcells():
     """Test read ImageJ three channels."""
-    filename = private_file('imagej/FluorescentCells.tif')
+    filename = _file('imagej/FluorescentCells.tif')
     with TiffFile(filename) as tif:
         assert tif.is_imagej
         assert tif.byteorder == '>'
@@ -12515,12 +12637,12 @@ def test_read_imagej_fluorescentcells():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC or SKIP_LARGE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_LARGE, reason=REASON)
 def test_read_imagej_100000_pages():
     """Test read ImageJ with 100000 pages."""
     # 100000x64x64
     # file is big endian, memory mapped
-    filename = public_file('tifffile/100000_pages.tif')
+    filename = _file('tifffile/100000_pages.tif')
     with TiffFile(filename) as tif:
         assert tif.is_imagej
         assert tif.byteorder == '>'
@@ -12552,17 +12674,18 @@ def test_read_imagej_100000_pages():
         assert data.shape == (100000, 64, 64)
         assert data.dtype == numpy.dtype('>u2')
         assert round(abs(data[7310, 25, 25] - 100), 7) == 0
-        # too slow: assert_aszarr_method(series, data)
+        if not SKIP_SLOW:
+            assert_aszarr_method(series, data)
         assert__str__(tif, 0)
         del data
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_imagej_invalid_metadata(caplog):
     """Test read bad ImageJ metadata."""
     # file contains 1 page but metadata claims 3500 images
     # memory map big endian data
-    filename = private_file('sima/0.tif')
+    filename = _file('sima/0.tif')
     with TiffFile(filename) as tif:
         assert tif.is_imagej
         assert tif.byteorder == '>'
@@ -12600,13 +12723,13 @@ def test_read_imagej_invalid_metadata(caplog):
         del data
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_imagej_invalid_hyperstack():
     """Test read bad ImageJ hyperstack."""
     # file claims to be a hyperstack but is not stored as such
     # produced by OME writer
     # reported by Taras Golota on 10/27/2016
-    filename = private_file('imagej/X0.ome.CTZ.perm.tif')
+    filename = _file('imagej/X0.ome.CTZ.perm.tif')
     with TiffFile(filename) as tif:
         assert tif.is_imagej
         assert tif.byteorder == '<'
@@ -12634,12 +12757,12 @@ def test_read_imagej_invalid_hyperstack():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_scifio():
     """Test read SCIFIO file using ImageJ metadata."""
     # https://github.com/AllenCellModeling/aicsimageio/issues/436
     # read
-    filename = private_file('scifio/2MF1P2_glia.tif')
+    filename = _file('scifio/2MF1P2_glia.tif')
     with TiffFile(filename) as tif:
         assert tif.is_imagej
         assert tif.byteorder == '>'
@@ -12673,11 +12796,11 @@ def test_read_scifio():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_fluoview_lsp1_v_laser():
     """Test read FluoView CTYX."""
     # raises 'UnicodeWarning: Unicode equal comparison failed' on Python 2
-    filename = private_file('fluoview/lsp1-V-laser0.3-1.tif')
+    filename = _file('fluoview/lsp1-V-laser0.3-1.tif')
     with TiffFile(filename) as tif:
         assert tif.byteorder == '<'
         assert len(tif.pages) == 100
@@ -12715,10 +12838,10 @@ def test_read_fluoview_lsp1_v_laser():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_LARGE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_LARGE, reason=REASON)
 def test_read_fluoview_120816_bf_f0000():
     """Test read FluoView TZYX."""
-    filename = private_file('fluoview/120816_bf_f0000.tif')
+    filename = _file('fluoview/120816_bf_f0000.tif')
     with TiffFile(filename) as tif:
         assert tif.byteorder == '<'
         assert len(tif.pages) == 864
@@ -12749,15 +12872,16 @@ def test_read_fluoview_120816_bf_f0000():
         assert data.shape == (144, 6, 1024, 1024)
         assert data.dtype == numpy.uint16
         assert round(abs(data[1, 2, 128, 128] - 8317), 7) == 0
-        # too slow: assert_aszarr_method(series, data)
+        if not SKIP_SLOW:
+            assert_aszarr_method(series, data)
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_read_metaseries():
     """Test read MetaSeries 1040x1392 uint16, LZW."""
     # Strips do not contain an EOI code as required by the TIFF spec.
-    filename = private_file('metaseries/metaseries.tif')
+    filename = _file('metaseries/metaseries.tif')
     with TiffFile(filename) as tif:
         assert tif.byteorder == '<'
         assert len(tif.pages) == 1
@@ -12785,13 +12909,13 @@ def test_read_metaseries():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_metaseries_g4d7r():
     """Test read Metamorph/Metaseries."""
     # 12113x13453, uint16
     import uuid
 
-    filename = private_file('metaseries/g4d7r.tif')
+    filename = _file('metaseries/g4d7r.tif')
     with TiffFile(filename) as tif:
         assert tif.byteorder == '<'
         assert len(tif.pages) == 1
@@ -12835,11 +12959,11 @@ def test_read_metaseries_g4d7r():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_mdgel_rat():
     """Test read Molecular Dynamics GEL."""
     # Second page does not contain data, only private tags
-    filename = private_file('mdgel/rat.gel')
+    filename = _file('mdgel/rat.gel')
     with TiffFile(filename) as tif:
         assert tif.byteorder == '<'
         assert len(tif.pages) == 2
@@ -12890,11 +13014,11 @@ def test_read_mdgel_rat():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_mediacy_imagepro():
     """Test read Media Cybernetics SEQ."""
     # TZYX, uint16, OME multifile TIFF
-    filename = private_file('mediacy/imagepro.tif')
+    filename = _file('mediacy/imagepro.tif')
     with TiffFile(filename) as tif:
         assert tif.byteorder == '<'
         assert len(tif.pages) == 1
@@ -12926,10 +13050,10 @@ def test_read_mediacy_imagepro():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_pilatus_100k():
     """Test read Pilatus."""
-    filename = private_file('TvxPilatus/Pilatus100K_scan030_033.tiff')
+    filename = _file('TvxPilatus/Pilatus100K_scan030_033.tiff')
     with TiffFile(filename) as tif:
         assert tif.byteorder == '<'
         assert len(tif.pages) == 1
@@ -12952,10 +13076,10 @@ def test_read_pilatus_100k():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_pilatus_gibuf2():
     """Test read Pilatus."""
-    filename = private_file('TvxPilatus/GIbuf2_A9_18_001_0009.tiff')
+    filename = _file('TvxPilatus/GIbuf2_A9_18_001_0009.tiff')
     with TiffFile(filename) as tif:
         assert tif.byteorder == '<'
         assert len(tif.pages) == 1
@@ -12975,10 +13099,10 @@ def test_read_pilatus_gibuf2():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_epics_attrib():
     """Test read EPICS."""
-    filename = private_file('epics/attrib.tif')
+    filename = _file('epics/attrib.tif')
     with TiffFile(filename) as tif:
         assert tif.is_epics
         assert tif.byteorder == '<'
@@ -13010,11 +13134,11 @@ def test_read_epics_attrib():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_tvips_tietz_16bit():
     """Test read TVIPS metadata."""
     # file provided by Marco Oster on 10/26/2016
-    filename = private_file('tvips/test_tietz_16bit.tif')
+    filename = _file('tvips/test_tietz_16bit.tif')
     with TiffFile(filename) as tif:
         assert tif.is_tvips
         tvips = tif.tvips_metadata
@@ -13024,10 +13148,10 @@ def test_read_tvips_tietz_16bit():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_gdal_structural_metadata():
     """Test read non-TIFF GDAL structural metadata."""
-    filename = private_file('CloudOptimizedGeoTIFF/cog_rgb.tif')
+    filename = _file('CloudOptimizedGeoTIFF/cog_rgb.tif')
     with TiffFile(filename) as tif:
         assert not tif.is_geotiff
         assert tif.byteorder == '<'
@@ -13047,11 +13171,11 @@ def test_read_gdal_structural_metadata():
         }
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_geotiff_dimapdocument():
     """Test read GeoTIFF with 43 MB XML tag value."""
     # tag 65000  45070067s @487  "<Dimap_Document...
-    filename = private_file('geotiff/DimapDocument.tif')
+    filename = _file('geotiff/DimapDocument.tif')
     with TiffFile(filename) as tif:
         assert tif.is_geotiff
         assert tif.byteorder == '>'
@@ -13077,7 +13201,7 @@ def test_read_geotiff_dimapdocument():
         tags = tif.geotiff_metadata
         assert tags['GTCitationGeoKey'] == 'WGS 84 / UTM zone 29N'
         assert tags['ProjectedCSTypeGeoKey'] == 32629
-        assert_array_almost_equal(
+        assert_allclose(
             tags['ModelTransformation'],
             [
                 [60.0, 0.0, 0.0, 6.0e5],
@@ -13090,10 +13214,10 @@ def test_read_geotiff_dimapdocument():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_geotiff_spaf27_markedcorrect():
     """Test read GeoTIFF."""
-    filename = private_file('geotiff/spaf27_markedcorrect.tif')
+    filename = _file('geotiff/spaf27_markedcorrect.tif')
     with TiffFile(filename) as tif:
         assert tif.is_geotiff
         assert tif.byteorder == '<'
@@ -13117,17 +13241,15 @@ def test_read_geotiff_spaf27_markedcorrect():
         assert tags['GTCitationGeoKey'] == 'NAD27 / California zone VI'
         assert tags['GeogAngularUnitsGeoKey'] == 9102
         assert tags['ProjFalseOriginLatGeoKey'] == 32.1666666666667
-        assert_array_almost_equal(
-            tags['ModelPixelScale'], [195.509321, 198.32184, 0]
-        )
+        assert_allclose(tags['ModelPixelScale'], [195.509321, 198.32184, 0])
         assert_aszarr_method(page)
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_geotiff_cint16():
     """Test read complex integer images."""
-    filename = private_file('geotiff/cint16.tif')
+    filename = _file('geotiff/cint16.tif')
     with TiffFile(filename) as tif:
         assert tif.is_geotiff
         assert tif.byteorder == '<'
@@ -13149,11 +13271,11 @@ def test_read_geotiff_cint16():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 @pytest.mark.parametrize('bits', [16, 32])
 def test_read_complexint(bits):
     """Test read complex integer images."""
-    filename = private_file(f'gdal/cint{bits}.tif')
+    filename = _file(f'gdal/cint{bits}.tif')
     with TiffFile(filename) as tif:
         assert tif.is_geotiff
         assert tif.byteorder == '<'
@@ -13177,10 +13299,10 @@ def test_read_complexint(bits):
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_read_qpi():
     """Test read PerkinElmer-QPI, non Pyramid."""
-    filename = private_file('PerkinElmer-QPI/18-2470_2471_Scan1.qptiff')
+    filename = _file('PerkinElmer-QPI/18-2470_2471_Scan1.qptiff')
     with TiffFile(filename) as tif:
         assert len(tif.series) == 4
         assert len(tif.pages) == 9
@@ -13245,10 +13367,10 @@ def test_read_qpi():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_read_qpi_nopyramid():
     """Test read PerkinElmer-QPI, non Pyramid."""
-    filename = private_file(
+    filename = _file(
         'PerkinElmer-QPI/LuCa-7color_[13860,52919]_1x1component_data.tiff'
     )
     with TiffFile(filename) as tif:
@@ -13288,11 +13410,11 @@ def test_read_qpi_nopyramid():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_indica():
     """Test read Indica Labs pyramid."""
     # https://forum.image.sc/t/89191/4
-    filename = private_file('Indica/mouse_link.tif')
+    filename = _file('Indica/mouse_link.tif')
     with TiffFile(filename) as tif:
         assert len(tif.series) == 1
         assert len(tif.pages) == 40
@@ -13317,17 +13439,17 @@ def test_read_indica():
         image = tif.asarray(series=0, level=3)
         assert image.shape == (8, 3355, 2286)
         assert image.dtype == numpy.float32
-        assert_array_almost_equal(image[7, 3000, 1000], 6.0852714)
+        assert_allclose(image[7, 3000, 1000], 6.0852714, rtol=1e-5)
         assert_aszarr_method(series, image, level=3)
         assert_aszarr_method(series, image, level=3, chunkmode='page')
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_CODECS or SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_CODECS or SKIP_FILE, reason=REASON)
 def test_read_avs():
     """Test read Argos AVS pyramid."""
     # https://github.com/openslide/openslide/issues/614
-    filename = private_file('ArgosAVS/TestSlide1_ZStack.avs')
+    filename = _file('ArgosAVS/TestSlide1_ZStack.avs')
     with TiffFile(filename) as tif:
         assert len(tif.series) == 3
         assert len(tif.pages) == 42
@@ -13370,13 +13492,13 @@ def test_read_avs():
 
 
 @pytest.mark.skipif(
-    SKIP_PRIVATE or SKIP_CODECS or not imagecodecs.JPEG.available,
+    SKIP_FILE or SKIP_CODECS or not imagecodecs.JPEG.available,
     reason=REASON,
 )
 def test_read_philips():
     """Test read Philips DP pyramid."""
     # https://camelyon17.grand-challenge.org/Data/
-    filename = private_file('PhilipsDP/test_001.tif')
+    filename = _file('PhilipsDP/test_001.tif')
     with TiffFile(filename) as tif:
         assert len(tif.series) == 1
         assert len(tif.pages) == 9
@@ -13431,13 +13553,13 @@ def test_read_philips():
 
 
 @pytest.mark.skipif(
-    SKIP_PRIVATE or SKIP_CODECS or not imagecodecs.JPEG.available,
+    SKIP_FILE or SKIP_CODECS or not imagecodecs.JPEG.available,
     reason=REASON,
 )
 def test_read_philips_issue249():
     """Test write_fsspec with Philips slide missing row of tiles."""
     # https://github.com/cgohlke/tifffile/issues/249
-    filename = private_file('PhilipsDP/patient_080_node_2.tif')
+    filename = _file('PhilipsDP/patient_080_node_2.tif')
     with TiffFile(filename) as tif:
         assert len(tif.series) == 2
         assert len(tif.pages) == 11
@@ -13504,14 +13626,14 @@ def test_read_philips_issue249():
 
 
 @pytest.mark.skipif(
-    SKIP_PRIVATE or SKIP_CODECS or not imagecodecs.JPEG.available,
+    SKIP_FILE or SKIP_CODECS or not imagecodecs.JPEG.available,
     reason=REASON,
 )
 def test_read_philips_issue253():
     """Test read Philips DP pyramid with seemingly extra column of tiles."""
     # https://github.com/cgohlke/tifffile/issues/253
     # https://registry.opendata.aws/camelyon/
-    filename = private_file('PhilipsDP/sample.tiff')
+    filename = _file('PhilipsDP/sample.tiff')
     with TiffFile(filename) as tif:
         assert len(tif.series) == 3
         assert len(tif.pages) == 12
@@ -13580,12 +13702,12 @@ def test_read_philips_issue253():
 
 
 @pytest.mark.skipif(
-    SKIP_PRIVATE or SKIP_CODECS or not imagecodecs.JPEG.available,
+    SKIP_FILE or SKIP_CODECS or not imagecodecs.JPEG.available,
     reason=REASON,
 )
 def test_read_zif():
     """Test read Zoomable Image Format ZIF."""
-    filename = private_file('zif/ZoomifyImageExample.zif')
+    filename = _file('zif/ZoomifyImageExample.zif')
     with TiffFile(filename) as tif:
         # assert tif.is_zif
         assert len(tif.pages) == 5
@@ -13619,10 +13741,10 @@ def test_read_zif():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_read_vsi():
     """Test read Olympus VSI."""
-    filename = private_file('VSI/brightfield.vsi')
+    filename = _file('VSI/brightfield.vsi')
     with TiffFile(filename) as tif:
         assert not tif.is_sis
         assert tif.byteorder == '<'
@@ -13648,10 +13770,10 @@ def test_read_vsi():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_sis():
     """Test read Olympus SIS."""
-    filename = private_file('sis/4A5IE8EM_F00000409.tif')
+    filename = _file('sis/4A5IE8EM_F00000409.tif')
     with TiffFile(filename) as tif:
         assert tif.is_sis
         assert tif.byteorder == '<'
@@ -13684,10 +13806,10 @@ def test_read_sis():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_sis_noini():
     """Test read Olympus SIS without INI tag."""
-    filename = private_file('sis/110.tif')
+    filename = _file('sis/110.tif')
     with TiffFile(filename) as tif:
         assert tif.is_sis
         assert tif.byteorder == '<'
@@ -13706,11 +13828,11 @@ def test_read_sis_noini():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_sem_metadata():
     """Test read Zeiss SEM metadata."""
     # file from hyperspy tests
-    filename = private_file('hyperspy/test_tiff_Zeiss_SEM_1k.tif')
+    filename = _file('hyperspy/test_tiff_Zeiss_SEM_1k.tif')
     with TiffFile(filename) as tif:
         assert tif.is_sem
         assert tif.byteorder == '<'
@@ -13741,11 +13863,11 @@ def test_read_sem_metadata():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_sem_bad_metadata():
     """Test read Zeiss SEM metadata with wrong length."""
     # reported by Klaus Schwarzburg on 8/27/2018
-    filename = private_file('issues/sem_bad_metadata.tif')
+    filename = _file('issues/sem_bad_metadata.tif')
     with TiffFile(filename) as tif:
         assert tif.is_sem
         assert tif.byteorder == '<'
@@ -13768,11 +13890,11 @@ def test_read_sem_bad_metadata():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_fei_metadata():
     """Test read Helios FEI metadata."""
     # file from hyperspy tests
-    filename = private_file('hyperspy/test_tiff_FEI_SEM.tif')
+    filename = _file('hyperspy/test_tiff_FEI_SEM.tif')
     with TiffFile(filename) as tif:
         assert tif.is_fei
         assert tif.byteorder == '<'
@@ -13796,14 +13918,14 @@ def test_read_fei_metadata():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_LARGE or SKIP_ZARR, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_LARGE or SKIP_ZARR, reason=REASON)
 def test_read_mmstack_multifile(caplog):
     """Test read MicroManager 2.0 multi-file, multi-position dataset."""
     # TODO: what version of MicroManager does not write corrupted files?
     # second ImageDescription tag value is beyond 4 GB
     # MicroManager headers are beyond 4 GB
     # MicroManager display settings are truncated
-    filename = private_file('MMStack/NDTiff.index/_4_MMStack_Pos0.ome.tif')
+    filename = _file('MMStack/NDTiff.index/_4_MMStack_Pos0.ome.tif')
     with TiffFile(filename) as tif:
         assert 'coercing invalid ASCII to bytes' in caplog.text
         assert tif.is_micromanager
@@ -13839,17 +13961,21 @@ def test_read_mmstack_multifile(caplog):
         assert data[48, 1, 23, 1, 253, 257] == 1236
         # assert_aszarr_method(series, data)  # takes 2 minutes
         with series.aszarr() as store:
-            data = zarr.open(store, mode='r')
-            assert data[48, 1, 23, 1, 253, 257] == 1236
+            zdata = zarr.open(store, mode='r')
+            assert zdata[48, 1, 23, 1, 253, 257] == 1236
+            del zdata
         # test OME; ImageJ can't handle multi-file or positions
-        assert_array_equal(data[:, 0], imread(filename, is_mmstack=False))
+        data1 = data[:, 0]
+        data2 = imread(filename, is_mmstack=False)
+        assert data1.shape == data2.shape
+        assert_array_equal(data1[17], data2[17])
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_LARGE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_LARGE, reason=REASON)
 def test_read_mmstack_mosaic(caplog):
     """Test read MicroManager 1.4 mosaic dataset."""
-    filename = private_file(
+    filename = _file(
         'MMStack/mosaic/d220708_HybISS_AS_cycles1to5_NoBridgeProbes_dim3x3__3'
         '_MMStack_2-Pos_000_001.ome.tif'
     )
@@ -13890,12 +14016,10 @@ def test_read_mmstack_mosaic(caplog):
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_LARGE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_LARGE, reason=REASON)
 def test_read_mmstack_single():
     """Test read MicroManager single-file multi-region dataset."""
-    filename = private_file(
-        'MMStack/181003_multi_pos_time_course_1_MMStack.ome.tif'
-    )
+    filename = _file('MMStack/181003_multi_pos_time_course_1_MMStack.ome.tif')
     with TiffFile(filename) as tif:
         assert tif.is_micromanager
         assert tif.is_mmstack
@@ -13932,10 +14056,10 @@ def test_read_mmstack_single():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_LARGE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_LARGE, reason=REASON)
 def test_read_mmstack_missing(caplog):
     """Test read MicroManager missing files and pages in dataset."""
-    filename = private_file('MMStack/movie_9_MMStack.ome.tif')
+    filename = _file('MMStack/movie_9_MMStack.ome.tif')
     with TiffFile(filename) as tif:
         assert tif.is_micromanager
         assert tif.is_mmstack
@@ -13987,10 +14111,10 @@ def test_read_mmstack_missing(caplog):
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_LARGE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_LARGE, reason=REASON)
 def test_read_mmstack_bytesio(caplog):
     """Test read MicroManager missing data in BytesIO."""
-    filename = private_file('MMStack/movie_9_MMStack.ome.tif')
+    filename = _file('MMStack/movie_9_MMStack.ome.tif')
     with open(filename, 'rb') as fh:
         bytesio = BytesIO(fh.read())
     with TiffFile(bytesio) as tif:
@@ -14031,11 +14155,11 @@ def test_read_mmstack_bytesio(caplog):
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_LARGE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_LARGE, reason=REASON)
 def test_read_mmstack_missing_sbs(caplog):
     """Test read MicroManager dataset with missing data."""
     # https://github.com/cgohlke/tifffile/issues/187
-    filename = private_file('MMStack/10X_c1-SBS-1_A1_Tile-102.sbs.tif')
+    filename = _file('MMStack/10X_c1-SBS-1_A1_Tile-102.sbs.tif')
     with TiffFile(filename) as tif:
         assert tif.is_micromanager
         assert tif.is_mmstack
@@ -14075,10 +14199,10 @@ def test_read_mmstack_missing_sbs(caplog):
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_LARGE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_LARGE, reason=REASON)
 def test_read_mmstack_trzc():
     """Test read MicroManager 6 dimensional dataset."""
-    filename = private_file(
+    filename = _file(
         'MMStack'
         '/image_stack_tpzc_50tp_2p_5z_3c_512k_1_MMStack_2-Pos000_000.ome.tif'
     )
@@ -14123,11 +14247,11 @@ def test_read_mmstack_trzc():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_ndtiff_magellanstack():
     """Test read NDTiffStorage/MagellanStack."""
     # https://github.com/cgohlke/tifffile/issues/23
-    filename = private_file(
+    filename = _file(
         'NDTiffStorage/MagellanStack/Full resolution/democam_MagellanStack.tif'
     )
     with TiffFile(filename) as tif:
@@ -14151,10 +14275,10 @@ def test_read_ndtiff_magellanstack():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_ndtiff_v2():
     """Test read NDTiffStorage v2."""
-    filename = private_file(
+    filename = _file(
         'NDTiffStorage/v2/ndtiffv2.0_test/Full resolution'
         '/ndtiffv2.0_test_NDTiffStack.tif'
     )
@@ -14186,10 +14310,10 @@ def test_read_ndtiff_v2():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_ndtiff_tiled():
     """Test read NDTiffStorage v2 tiled."""
-    filename = private_file(
+    filename = _file(
         'NDTiffStorage/v2/ndtiffv2.0_stitched_test/Full resolution'
         '/ndtiffv2.0_stitched_test_NDTiffStack.tif'
     )
@@ -14218,10 +14342,10 @@ def test_read_ndtiff_tiled():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_ndtiff_v3():
     """Test read NDTiffStorage v3."""
-    filename = private_file(
+    filename = _file(
         'NDTiffStorage/v3/ndtiffv3.0_test/ndtiffv3.0_test_NDTiffStack.tif'
     )
     with TiffFile(filename) as tif:
@@ -14252,10 +14376,10 @@ def test_read_ndtiff_v3():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_ndtiff_tcz():
     """Test read NDTiffStorage v3 with squeezed axes."""
-    filename = private_file(
+    filename = _file(
         'NDTiffStorage/v3/mm_mda_tcz_15/mm_mda_tcz_15_NDTiffStack.tif'
     )
     with TiffFile(filename) as tif:
@@ -14287,17 +14411,17 @@ def test_read_ndtiff_tcz():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_ndtiff_bytesio(caplog):
     """Test read NDTiffStorage v3 with BytesIO."""
-    filename = private_file(
+    filename = _file(
         'NDTiffStorage/v3/mm_mda_tcz_15/mm_mda_tcz_15_NDTiffStack.tif'
     )
     with open(filename, 'rb') as fh:
         bytesio = BytesIO(fh.read())
     with TiffFile(bytesio) as tif:
         assert tif.is_micromanager
-        assert tif.is_ndtiff
+        assert not tif.is_ndtiff
         meta = tif.pages[-1].tags['MicroManagerMetadata'].value
         assert 'Axes' not in meta  # missing?
         # expected {'channel': 1, 'z': 6, 'position': 0, 'time': 7}
@@ -14307,21 +14431,21 @@ def test_read_ndtiff_bytesio(caplog):
         assert meta['MinorVersion'] == 0
         assert meta['Summary']['PixelType'] == 'GRAY16'
         series = tif.series[0]
-        assert 'NDTiff.index not found for' in caplog.text
-        assert series.kind == 'generic'  # not ndtiff
+        assert 'NDTiff.index not found for' not in caplog.text
+        assert series.kind == 'uniform'  # not ndtiff
         assert series.dtype == numpy.uint16
-        assert series.get_shape(squeeze=False) == (112, 512, 512, 1)
-        assert series.get_axes(squeeze=False) == 'IYXS'
+        assert series.get_shape(squeeze=False) == (112, 512, 512)
+        assert series.get_axes(squeeze=False) == 'IYX'
         data = series.asarray(squeeze=True)
         assert data.shape == (112, 512, 512)
         assert_aszarr_method(tif, data, mode='r')
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_ndtiff_multichannel():
     """Test read NDTiffStorage v3 with channel names."""
-    filename = private_file(
+    filename = _file(
         'NDTiffStorage/v3/ndtiff3.2_multichannel'
         '/NDTiff3.2_multichannel_NDTiffStack.tif'
     )
@@ -14353,11 +14477,11 @@ def test_read_ndtiff_multichannel():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_ndtiff_unordered_axes(caplog):
     """Test read NDTiffStorage with unordered axes_dict keys."""
     # https://github.com/cgohlke/tifffile/issues/311
-    filename = private_file(
+    filename = _file(
         'NDTiffStorage/v3/issue311/NDTiff3.2_multichannel_NDTiffStack.tif'
     )
     with TiffFile(filename) as tif:
@@ -14390,10 +14514,10 @@ def test_read_ndtiff_unordered_axes(caplog):
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC or SKIP_ZARR, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_ZARR, reason=REASON)
 def test_read_zarr():
     """Test read TIFF with zarr."""
-    filename = public_file('imagecodecs/gray.u1.tif')
+    filename = _file('imagecodecs/gray.u1.tif')
     with TiffFile(filename) as tif:
         image = tif.asarray()
         store = tif.aszarr()
@@ -14405,13 +14529,13 @@ def test_read_zarr():
         store.close()
 
 
-@pytest.mark.skipif(SKIP_PUBLIC or SKIP_ZARR, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_ZARR, reason=REASON)
 @pytest.mark.xfail(reason='LRUStoreCache not available in Zarr 3')
 def test_read_zarr_lrucache():
     """Test read TIFF with zarr LRUStoreCache."""
     # fails with zarr 2.15/16
     # https://github.com/zarr-developers/zarr-python/issues/1497
-    filename = public_file('imagecodecs/gray.u1.tif')
+    filename = _file('imagecodecs/gray.u1.tif')
     with TiffFile(filename) as tif:
         image = tif.asarray()
         store = tif.aszarr()
@@ -14424,10 +14548,10 @@ def test_read_zarr_lrucache():
         store.close()
 
 
-@pytest.mark.skipif(SKIP_PUBLIC or SKIP_ZARR, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_ZARR, reason=REASON)
 def test_read_zarr_multifile():
     """Test read multifile OME-TIFF with zarr."""
-    filename = public_file('OME/multifile/multifile-Z1.ome.tiff')
+    filename = _file('OME/multifile/multifile-Z1.ome.tiff')
     with TiffFile(filename) as tif:
         image = tif.asarray()
         store = tif.aszarr()
@@ -14439,11 +14563,11 @@ def test_read_zarr_multifile():
         store.close()
 
 
-@pytest.mark.skipif(SKIP_PUBLIC or SKIP_ZARR, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_ZARR, reason=REASON)
 @pytest.mark.parametrize('multiscales', [None, False, True])
 def test_read_zarr_multiscales(multiscales):
     """Test Zarr store multiscales parameter."""
-    filename = public_file('tifffile/multiscene_pyramidal.ome.tif')
+    filename = _file('tifffile/multiscene_pyramidal.ome.tif')
     with TiffFile(filename) as tif:
         page = tif.pages[1]
         series = tif.series[0]
@@ -14473,10 +14597,10 @@ def test_read_zarr_multiscales(multiscales):
             del z
 
 
-@pytest.mark.skipif(SKIP_PUBLIC or SKIP_ZARR, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_ZARR, reason=REASON)
 def test_read_zarr_level():
     """Test Zarr store of level."""
-    filename = public_file('tifffile/multiscene_pyramidal.ome.tif')
+    filename = _file('tifffile/multiscene_pyramidal.ome.tif')
     data = imread(filename, key=1, series=0, level=2)
     store = imread(filename, key=1, series=0, level=2, aszarr=True)
     z = zarr.open(store, mode='r')
@@ -14485,7 +14609,7 @@ def test_read_zarr_level():
     assert_array_equal(image, data)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 @pytest.mark.parametrize('superres', [0, 1, 3])
 def test_read_eer(caplog, superres):
     """Test read EER superresolution."""
@@ -14493,7 +14617,7 @@ def test_read_eer(caplog, superres):
     # https://github.com/cgohlke/tifffile/issues/313
     # requires imagecodecs > 2025.8.2
 
-    filename = private_file(
+    filename = _file(
         'EER/FoilHole_29355520_Data_29330528_29330530_20200329_234551'
         '_Fractions.mrc.eer'
     )
@@ -14565,7 +14689,7 @@ def test_read_eer(caplog, superres):
                 return
             register_codecs('imagecodecs_eer', verbose=False)
             filename = os.path.split(filename)[-1]
-            url = URL + 'test/private/EER/'
+            url = URL + 'test/EER/'
             with TempFileName(
                 filename + f'_{superres}', ext='.json'
             ) as jsonfile:
@@ -14575,11 +14699,10 @@ def test_read_eer(caplog, superres):
                 assert_fsspec(URL + os.path.split(jsonfile)[-1], data)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_read_eer_integrate(caplog):
     """Test read EER with integrated image."""
-    filename = private_file('EER/with_thumbnail.eer')
-
+    filename = _file('EER/with_thumbnail.eer')
     with TiffFile(filename, superres=0) as tif:
         assert not caplog.text  # no warning
         assert tif.is_bigtiff
@@ -14637,11 +14760,11 @@ def test_read_eer_integrate(caplog):
         assert series.pages[0].asarray().sum(dtype=numpy.uint32) == 226656
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_astrotiff(caplog):
     """Test read AstroTIFF with FITS metadata."""
     # https://astro-tiff.sourceforge.io/
-    filename = private_file('AstroTIFF/NGC2024_astro-tiff_sample_48bit.tif')
+    filename = _file('AstroTIFF/NGC2024_astro-tiff_sample_48bit.tif')
     with TiffFile(filename) as tif:
         assert not caplog.text  # no warning
         assert tif.is_astrotiff
@@ -14666,10 +14789,10 @@ def test_read_astrotiff(caplog):
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_streak():
     """Test read Hamamatus Streak file."""
-    filename = private_file('HamamatsuStreak/hamamatsu_streak.tif')
+    filename = _file('HamamatsuStreak/hamamatsu_streak.tif')
     with TiffFile(filename) as tif:
         assert tif.is_streak
         assert tif.byteorder == '<'
@@ -14701,10 +14824,10 @@ def test_read_streak():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_agilent():
     """Test read Agilent Technologies file."""
-    filename = private_file('Agilent/SG11410002_253174651388_S001.tif')
+    filename = _file('Agilent/SG11410002_253174651388_S001.tif')
     with TiffFile(filename) as tif:
         assert tif.is_agilent
         assert not tif.is_mdgel
@@ -14730,10 +14853,10 @@ def test_read_agilent():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_read_nuvu():
     """Test read Nuvu camera file."""
-    filename = private_file('Nuvu/hluc-lumi-5s_0.tif')
+    filename = _file('Nuvu/hluc-lumi-5s_0.tif')
     with TiffFile(filename) as tif:
         assert tif.is_nuvu
         assert tif.byteorder == '<'
@@ -14760,11 +14883,11 @@ def test_read_nuvu():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC or SKIP_ZARR, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_ZARR, reason=REASON)
 @pytest.mark.parametrize('chunkmode', [0, 2])
 def test_read_selection(chunkmode):
     """Test read selection via imread."""
-    filename = public_file('tifffile/multiscene_pyramidal.ome.tif')
+    filename = _file('tifffile/multiscene_pyramidal.ome.tif')
     selection = (8, slice(16, 17), slice(None), slice(51, 99), slice(51, 99))
     # series 0
     assert_array_equal(
@@ -14804,12 +14927,12 @@ def test_read_selection(chunkmode):
     )
 
 
-@pytest.mark.skipif(SKIP_PUBLIC or SKIP_ZARR, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_ZARR, reason=REASON)
 @pytest.mark.parametrize('out', [None, 'empty', 'memmap', 'name'])
 def test_read_selection_out(out):
     """Test read selection via imread into out."""
     # https://github.com/cgohlke/tifffile/pull/222
-    filename = public_file('tifffile/multiscene_pyramidal.ome.tif')
+    filename = _file('tifffile/multiscene_pyramidal.ome.tif')
     selection = (8, slice(16, 17), slice(None), slice(51, 99), slice(51, 99))
     expected = imread(filename)[8, 16:17, :, 51:99, 51:99]
     if out is None:
@@ -14830,12 +14953,13 @@ def test_read_selection_out(out):
             assert isinstance(image, numpy.memmap)
 
     assert_array_equal(image, expected)
+    del image  # close memmap
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_CODECS or SKIP_ZARR, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS or SKIP_ZARR, reason=REASON)
 def test_read_selection_filesequence():
     """Test read selection from file sequence via imread."""
-    filename = private_files('TiffSequence/*.tif')
+    filename = _files('TiffSequence/*.tif')
     assert_array_equal(
         imread(filename)[5:8, 51:99, 51:99],
         imread(
@@ -15163,7 +15287,7 @@ def test_write_invalid_samples(samples):
             imwrite(filename, data, photometric='rgb')
 
 
-@pytest.mark.skipif(SKIP_PUBLIC or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 @pytest.mark.parametrize('tile', [False, True])
 @pytest.mark.parametrize(
     'codec',
@@ -15189,7 +15313,7 @@ def test_write_codecs(mode, tile, codec):
     level = {'webp': -1, 'jpeg': 99}.get(codec)
     compressionargs = {'level': level} if level else None
     tile = (16, 16) if tile else None
-    data = numpy.load(public_file('tifffile/rgb.u1.npy'))
+    data = numpy.load(_file('tifffile/rgb.u1.npy'))
     if mode == 'rgb':
         photometric = PHOTOMETRIC.RGB
         planarconfig = PLANARCONFIG.CONTIG
@@ -15249,7 +15373,7 @@ def test_write_codecs(mode, tile, codec):
             assert_array_equal(im, numpy.squeeze(image))
 
 
-@pytest.mark.skipif(SKIP_PUBLIC, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 @pytest.mark.parametrize('mode', ['gray', 'rgb', 'planar'])
 @pytest.mark.parametrize('tile', [False, True])
 @pytest.mark.parametrize(
@@ -15261,7 +15385,7 @@ def test_write_predictor(byteorder, dtype, tile, mode):
     if dtype[0] == 'f' and SKIP_CODECS:
         pytest.xfail('requires imagecodecs')
     tile = (32, 32) if tile else None
-    f4 = imread(public_file('tifffile/gray.f4.tif'))
+    f4 = imread(_file('tifffile/gray.f4.tif'))
     if mode == 'rgb':
         photometric = PHOTOMETRIC.RGB
         planarconfig = PLANARCONFIG.CONTIG
@@ -15629,16 +15753,16 @@ def test_write_append_nontif():
                 pass
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_write_append_lsm():
     """Test fail to append to LSM file."""
-    filename = private_file('lsm/take1.lsm')
+    filename = _file('lsm/take1.lsm')
     with pytest.raises(ValueError):  # noqa: SIM117
         with TiffWriter(filename, append=True):
             pass
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_write_append_create():
     """Test append to non-existing file."""
     with TempFileName('write_append_create') as filename:
@@ -15737,20 +15861,20 @@ def test_write_append_bytesio():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_write_roundtrip_filename():
     """Test write and read using file name."""
-    data = imread(public_file('tifffile/generic_series.tif'))
+    data = imread(_file('tifffile/generic_series.tif'))
     with TempFileName('write_roundtrip_filename') as filename:
         imwrite(filename, data, photometric=PHOTOMETRIC.RGB)
         assert_array_equal(imread(filename), data)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_write_roundtrip_openfile():
     """Test write and read using open file."""
     pad = b'0' * 7
-    data = imread(public_file('tifffile/generic_series.tif'))
+    data = imread(_file('tifffile/generic_series.tif'))
     with TempFileName('write_roundtrip_openfile') as filename:
         with open(filename, 'wb') as fh:
             fh.write(pad)
@@ -15761,11 +15885,11 @@ def test_write_roundtrip_openfile():
             assert_array_equal(imread(fh), data)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_write_roundtrip_bytesio():
     """Test write and read using BytesIO."""
     pad = b'0' * 7
-    data = imread(public_file('tifffile/generic_series.tif'))
+    data = imread(_file('tifffile/generic_series.tif'))
     buf = BytesIO()
     buf.write(pad)
     imwrite(buf, data, photometric=PHOTOMETRIC.RGB)
@@ -16512,7 +16636,7 @@ def test_write_compression_none():
 # @pytest.mark.parametrize('optimize', [None, False, True])
 # @pytest.mark.parametrize('smoothing', [None, 10])
 @pytest.mark.skipif(
-    SKIP_PUBLIC or SKIP_CODECS or not imagecodecs.JPEG.available, reason=REASON
+    SKIP_FILE or SKIP_CODECS or not imagecodecs.JPEG.available, reason=REASON
 )
 @pytest.mark.parametrize('subsampling', ['444', '422', '420', '411'])
 @pytest.mark.parametrize('dtype', [numpy.uint8, numpy.uint16])
@@ -16526,7 +16650,7 @@ def test_write_compression_jpeg(dtype, subsampling):
         '420': [(2, 2), 20],
         '411': [(4, 1), 40],
     }[subsampling]
-    data = numpy.load(public_file('tifffile/rgb.u1.npy')).astype(dtype)
+    data = numpy.load(_file('tifffile/rgb.u1.npy')).astype(dtype)
     data = data[:32, :16].copy()  # make divisible by subsamples
     with TempFileName(filename) as filename:
         imwrite(
@@ -16821,7 +16945,7 @@ def test_write_compression_lerc(compression):
             assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_write_compression_jetraw():
     """Test write Jetraw compression."""
     try:
@@ -16832,7 +16956,7 @@ def test_write_compression_jetraw():
     if not have_jetraw:
         pytest.skip('Jetraw codec not available')
 
-    data = imread(private_file('jetraw/16ms-1.tif'))
+    data = imread(_file('jetraw/16ms-1.tif'))
     assert data.dtype == numpy.uint16
     assert data.shape == (2304, 2304)
     assert data[1490, 1830] == 36701
@@ -18029,13 +18153,11 @@ def test_write_iccprofile():
             assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_write_cfa():
     """Test write uncompressed CFA image."""
     # TODO: write a valid TIFF/EP file
-    data = imread(
-        private_file('DNG/cinemadng/M14-1451_000085_cDNG_uncompressed.dng')
-    )
+    data = imread(_file('DNG/cinemadng/M14-1451_000085_cDNG_uncompressed.dng'))
     extratags = [
         (271, 's', 4, 'Make', False),
         (272, 's', 5, 'Model', False),
@@ -19205,10 +19327,10 @@ def test_write_palette(dtype, compression):
             assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_write_palette_django():
     """Test write palette read from existing file."""
-    filename = private_file('django.tiff')
+    filename = _file('django.tiff')
     with TiffFile(filename) as tif:
         page = tif.pages.first
         assert page.photometric == PHOTOMETRIC.PALETTE
@@ -19239,12 +19361,12 @@ def test_write_palette_django():
             assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_write_multiple_series():
     """Test write multiple data into one file using various options."""
-    data1 = imread(private_file('ome/multi-channel-4D-series.ome.tif'))
-    image1 = imread(private_file('django.tiff'))
-    image2 = imread(private_file('horse-16bit-col-littleendian.tif'))
+    data1 = imread(_file('ome/multi-channel-4D-series.ome.tif'))
+    image1 = imread(_file('django.tiff'))
+    image2 = imread(_file('horse-16bit-col-littleendian.tif'))
     with TempFileName('write_multiple_series') as filename:
         with TiffWriter(filename, bigtiff=False) as tif:
             # series 0
@@ -19603,12 +19725,12 @@ def test_write_fsspec(version, byteorder):
             assert_fsspec(URL + filename + f'.v{version}.s5.json', data3)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC or SKIP_ZARR, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_ZARR, reason=REASON)
 @pytest.mark.parametrize('version', [0, 1])
 @pytest.mark.parametrize('chunkmode', [0, 2])
 def test_write_fsspec_multifile(version, chunkmode):
     """Test write fsspec for multi-file OME series."""
-    filename = public_file('OME/multifile/multifile-Z1.ome.tiff')
+    filename = _file('OME/multifile/multifile-Z1.ome.tiff')
     url = os.path.dirname(filename).replace('\\', '/')
     with TempFileName(
         f'write_fsspec_multifile_{version}{chunkmode}', ext='.json'
@@ -19628,7 +19750,7 @@ def test_write_fsspec_multifile(version, chunkmode):
 
 
 @pytest.mark.skipif(
-    SKIP_PRIVATE or SKIP_LARGE or SKIP_CODECS or SKIP_ZARR,
+    SKIP_FILE or SKIP_LARGE or SKIP_CODECS or SKIP_ZARR,
     reason=REASON,
 )
 @pytest.mark.parametrize('version', [1])  # 0,
@@ -19637,8 +19759,8 @@ def test_write_fsspec_sequence(version):
     # https://bbbc.broadinstitute.org/BBBC006
     categories = {'p': {chr(i + 97): i for i in range(25)}}
     ptrn = r'(?:_(z)_(\d+)).*_(?P<p>[a-z])(?P<a>\d+)(?:_(s)(\d))(?:_(w)(\d))'
-    filenames = private_files('BBBC/BBBC006_v1_images_z_00/*.tif')
-    filenames += private_files('BBBC/BBBC006_v1_images_z_01/*.tif')
+    filenames = _files('BBBC/BBBC006_v1_images_z_00/*.tif')
+    filenames += _files('BBBC/BBBC006_v1_images_z_01/*.tif')
     tifs = TiffSequence(
         filenames,
         imread=imagecodecs.imread,
@@ -19670,10 +19792,10 @@ def test_write_fsspec_sequence(version):
         assert_array_equal(zobj[:], data)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC or SKIP_ZARR, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_ZARR, reason=REASON)
 def test_write_tiff2fsspec():
     """Test tiff2fsspec function."""
-    filename = public_file('tifffile/multiscene_pyramidal.ome.tif')
+    filename = _file('tifffile/multiscene_pyramidal.ome.tif')
     url = os.path.dirname(filename).replace('\\', '/')
     data = imread(filename, series=0, level=1, maxworkers=1)
     with TempFileName('write_tiff2fsspec', ext='.json') as jsonfile:
@@ -19860,10 +19982,10 @@ def test_write_imagej_colormap(dtype, photometric):
         assert_valid_tiff(filename)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_write_imagej_ijmetadata_tag():
     """Test write and read IJMetadata tag."""
-    filename = private_file('imagej/IJMetadata.tif')
+    filename = _file('imagej/IJMetadata.tif')
     with TiffFile(filename) as tif:
         assert tif.is_imagej
         assert tif.byteorder == '>'
@@ -19922,10 +20044,10 @@ def test_write_imagej_ijmetadata_tag():
     assert_valid_tiff(filename)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_write_imagej_roundtrip():
     """Test ImageJ metadata survive read/write roundtrip."""
-    filename = private_file('imagej/IJMetadata.tif')
+    filename = _file('imagej/IJMetadata.tif')
     with TiffFile(filename) as tif:
         assert tif.is_imagej
         assert tif.byteorder == '>'
@@ -20258,7 +20380,7 @@ def test_write_ome_enable():
             assert tif.is_ome
 
 
-@pytest.mark.skipif(SKIP_PUBLIC, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 @pytest.mark.parametrize(
     'method', ['manual', 'copy', 'iter', 'compression', 'xml', 'dask']
 )
@@ -20268,7 +20390,7 @@ def test_write_ome_methods(method):
     if method == 'dask' and (SKIP_DASK or SKIP_ZARR):
         pytest.skip('skip dask')
 
-    filename = public_file('OME/bioformats-artificial/4D-series.ome.tiff')
+    filename = _file('OME/bioformats-artificial/4D-series.ome.tiff')
     with TiffFile(filename) as tif:
         series = tif.series[0]
         data = series.asarray()
@@ -20444,7 +20566,7 @@ def test_write_ome_manual(contiguous):
 
 
 @pytest.mark.skipif(
-    SKIP_PUBLIC or SKIP_CODECS or not imagecodecs.JPEG.available,
+    SKIP_FILE or SKIP_CODECS or not imagecodecs.JPEG.available,
     reason=REASON,
 )
 def test_rewrite_ome():
@@ -20453,7 +20575,7 @@ def test_rewrite_ome():
     # - data loss in case of JPEG recompression; copy tiles verbatim
     # - OME metadata not copied; use ometypes library after writing
     # - tifffile does not support multi-file OME-TIFF writing
-    filename = public_file('tifffile/multiscene_pyramidal.ome.tif')
+    filename = _file('tifffile/multiscene_pyramidal.ome.tif')
     with TiffFile(filename) as tif:
         assert tif.is_ome
         with TempFileName('rewrite_ome', ext='.ome.tif') as filename_copy:
@@ -20511,10 +20633,7 @@ def test_rewrite_ome():
 
 
 @pytest.mark.skipif(
-    SKIP_PRIVATE
-    or SKIP_CODECS
-    or SKIP_LARGE
-    or not imagecodecs.JPEG.available,
+    SKIP_FILE or SKIP_CODECS or SKIP_LARGE or not imagecodecs.JPEG.available,
     reason=REASON,
 )
 def test_write_ome_copy():
@@ -20530,7 +20649,7 @@ def test_write_ome_copy():
             fh.seek(offset)
             yield fh.read(bytecount)
 
-    with TiffFile(private_file('AperioSVS/CMU-1.svs')) as svs:
+    with TiffFile(_file('AperioSVS/CMU-1.svs')) as svs:
         assert svs.is_svs
         levels = svs.series[0].levels
 
@@ -20605,7 +20724,7 @@ def test_write_ome_copy():
 
 
 @pytest.mark.skipif(
-    SKIP_PRIVATE or SKIP_CODECS or not imagecodecs.JPEG.available,
+    SKIP_FILE or SKIP_CODECS or not imagecodecs.JPEG.available,
     reason=REASON,
 )
 def test_write_geotiff_copy():
@@ -20621,7 +20740,7 @@ def test_write_geotiff_copy():
             fh.seek(offset)
             yield fh.read(bytecount)
 
-    with TiffFile(private_file('GeoTIFF/ML_30m.tif')) as geotiff:
+    with TiffFile(_file('GeoTIFF/ML_30m.tif')) as geotiff:
         assert geotiff.is_geotiff
         assert len(geotiff.pages) == 1
 
@@ -20783,7 +20902,7 @@ def test_write_array_types(atype, byteorder, tiled, compression):
 
 # Test embedded TIFF files
 
-EMBED_NAME = public_file('tifffile/test_FileHandle.bin')
+EMBED_NAME = _file('tifffile/test_FileHandle.bin')
 EMBED_OFFSET = 7077
 EMBED_SIZE = 5744
 EMBED_OFFSET1 = 13820
@@ -20896,7 +21015,6 @@ def assert_embed_micromanager(tif):
     # assert some metadata
     ijmeta = tif.imagej_metadata
     assert ijmeta is not None
-    assert ijmeta is not None
     assert ijmeta['frames'] == 5
     assert ijmeta['slices'] == 3
     assert ijmeta['Ranges'] == (706.0, 5846.0)
@@ -20924,14 +21042,14 @@ def assert_embed_micromanager(tif):
     assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_embed_tif_filename():
     """Test embedded TIFF from filename."""
     with TiffFile(EMBED_NAME, offset=EMBED_OFFSET, size=EMBED_SIZE) as tif:
         assert_embed_tif(tif)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_embed_tif_openfile():
     """Test embedded TIFF from file handle."""
     with (
@@ -20941,7 +21059,7 @@ def test_embed_tif_openfile():
         assert_embed_tif(tif)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_embed_tif_openfile_seek():
     """Test embedded TIFF from sought file handle."""
     with open(EMBED_NAME, 'rb') as fh:
@@ -20950,7 +21068,7 @@ def test_embed_tif_openfile_seek():
             assert_embed_tif(tif)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_embed_tif_filehandle():
     """Test embedded TIFF from FileHandle."""
     with (
@@ -20960,7 +21078,7 @@ def test_embed_tif_filehandle():
         assert_embed_tif(tif)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_embed_tif_bytesio():
     """Test embedded TIFF from BytesIO."""
     with open(EMBED_NAME, 'rb') as fh:
@@ -20969,14 +21087,14 @@ def test_embed_tif_bytesio():
         assert_embed_tif(tif)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_embed_mm_filename():
     """Test embedded MicroManager TIFF from file name."""
     with TiffFile(EMBED_NAME, offset=EMBED_OFFSET1, size=EMBED_SIZE1) as tif:
         assert_embed_micromanager(tif)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_embed_mm_openfile():
     """Test embedded MicroManager TIFF from file handle."""
     with (
@@ -20986,7 +21104,7 @@ def test_embed_mm_openfile():
         assert_embed_micromanager(tif)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_embed_mm_openfile_seek():
     """Test embedded MicroManager TIFF from sought file handle."""
     with open(EMBED_NAME, 'rb') as fh:
@@ -20995,7 +21113,7 @@ def test_embed_mm_openfile_seek():
             assert_embed_micromanager(tif)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_embed_mm_filehandle():
     """Test embedded MicroManager TIFF from FileHandle."""
     with (
@@ -21005,7 +21123,7 @@ def test_embed_mm_filehandle():
         assert_embed_micromanager(tif)
 
 
-@pytest.mark.skipif(SKIP_PUBLIC, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_embed_mm_bytesio():
     """Test embedded MicroManager TIFF from BytesIO."""
     with open(EMBED_NAME, 'rb') as fh:
@@ -21029,11 +21147,11 @@ def test_sequence_stream_list():
         imread(files)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 @pytest.mark.parametrize('case', [0, 1, 2, 3])
 def test_sequence_glob_pattern(case):
     """Test TiffSequence with glob pattern without axes pattern."""
-    filename = private_files('TiffSequence/*.tif')
+    filename = _files('TiffSequence/*.tif')
     tifs = TiffSequence(filename, pattern=None)
     assert len(tifs) == 10
     assert tifs.shape == (10,)
@@ -21077,12 +21195,12 @@ def test_sequence_glob_pattern(case):
     assert__repr__(tifs)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_sequence_name_list():
     """Test TiffSequence with list of file names without pattern."""
     filename = [
-        private_file('TiffSequence/AT3_1m4_01.tif'),
-        private_file('TiffSequence/AT3_1m4_10.tif'),
+        _file('TiffSequence/AT3_1m4_01.tif'),
+        _file('TiffSequence/AT3_1m4_10.tif'),
     ]
     tifs = TiffSequence(filename, pattern=None)
     assert len(tifs) == 2
@@ -21100,10 +21218,10 @@ def test_sequence_name_list():
     assert__repr__(tifs)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_sequence_oif_series():
     """Test TiffSequence with files from Olympus OIF, memory mapped."""
-    filename = private_files(
+    filename = _files(
         'oif/MB231cell1_paxgfp_PDMSgasket_PMMAflat_30nm_378sli.oif.files/*.tif'
     )
     tifs = TiffSequence(filename, pattern='axes')
@@ -21124,10 +21242,10 @@ def test_sequence_oif_series():
     assert__repr__(tifs)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_sequence_leica_series():
     """Test TiffSequence with Leica TIFF series, memory mapped."""
-    filename = private_files('leicaseries/Series019_*.tif')
+    filename = _files('leicaseries/Series019_*.tif')
     tifs = TiffSequence(filename, pattern='axes')
     assert len(tifs) == 46
     assert tifs.shape == (46,)
@@ -21145,10 +21263,10 @@ def test_sequence_leica_series():
     del data
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_sequence_zip_container():
     """Test TiffSequence with glob pattern without axes pattern."""
-    filename = private_file('TiffSequence.zip')
+    filename = _file('TiffSequence.zip')
     with TiffSequence('*.tif', container=filename, pattern=None) as tifs:
         assert len(tifs) == 10
         assert tifs.shape == (10,)
@@ -21162,14 +21280,14 @@ def test_sequence_zip_container():
     assert_array_equal(data, imread(container=filename))
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_LARGE or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_LARGE or SKIP_CODECS, reason=REASON)
 def test_sequence_wells_axesorder():
     """Test FileSequence with well plates and axes reorder."""
     # https://bbbc.broadinstitute.org/BBBC006
     categories = {'p': {chr(i + 97): i for i in range(25)}}
     ptrn = r'(?:_(z)_(\d+)).*_(?P<p>[a-z])(?P<a>\d+)(?:_(s)(\d))(?:_(w)(\d))'
-    filenames = private_files('BBBC/BBBC006_v1_images_z_00/*.tif')
-    filenames += private_files('BBBC/BBBC006_v1_images_z_01/*.tif')
+    filenames = _files('BBBC/BBBC006_v1_images_z_00/*.tif')
+    filenames += _files('BBBC/BBBC006_v1_images_z_01/*.tif')
     tifs = TiffSequence(
         filenames,
         pattern=ptrn,
@@ -21190,7 +21308,7 @@ def test_sequence_wells_axesorder():
             assert_array_equal(data, zarr.open(store, mode='r'))
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_LARGE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_LARGE, reason=REASON)
 @pytest.mark.parametrize('tiled', [False, True])
 def test_sequence_tiled(tiled):
     """Test FileSequence with tiled OME-TIFFs."""
@@ -21198,7 +21316,7 @@ def test_sequence_tiled(tiled):
     ptrn = re.compile(
         r'\[(?P<U>\d+) x (?P<V>\d+)\].*(C)(\d+).*(Z)(\d+)', re.IGNORECASE
     )
-    filenames = private_file('TiffSequenceTiled/*.tif')
+    filenames = _file('TiffSequenceTiled/*.tif')
     tifs = TiffSequence(filenames, pattern=ptrn)
     assert len(tifs) == 60
     assert tifs.shape == (2, 3, 2, 5)
@@ -21232,10 +21350,10 @@ def test_sequence_tiled(tiled):
                 )
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_sequence_imread():
     """Test TiffSequence with imagecodecs.imread."""
-    filename = private_files('PNG/*.png')
+    filename = _files('PNG/*.png')
     pngs = TiffSequence(filename, imread=imagecodecs.imread)
     assert len(pngs) == 4
     assert pngs.shape == (4,)
@@ -21250,11 +21368,11 @@ def test_sequence_imread():
     del data
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_sequence_imread_list():
     """Test imread with list of files."""
-    files = private_files('Nuvu/Sequence/*.tif')
-    pattern = os.path.join(PRIVATE_DIR, 'Nuvu/Sequence/*.tif')
+    files = _files('Nuvu/Sequence/*.tif')
+    pattern = os.path.join(DATA_DIR, 'Nuvu/Sequence/*.tif')
 
     # list not sorted by default
     assert imread(files)[-1, 256, 256] == 1682
@@ -21270,10 +21388,10 @@ def test_sequence_imread_list():
     assert imread(pattern, sort=False)[-1, 256, 256] == 1682
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_sequence_imread_glob():
     """Test imread function with glob pattern."""
-    filename = private_files('TiffSequence/*.tif')
+    filename = _files('TiffSequence/*.tif')
     data = imread(
         filename,
         imreadargs={'key': 0},
@@ -21295,10 +21413,10 @@ def test_sequence_imread_glob():
             store.close()
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_CODECS, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_sequence_imread_one():
     """Test imread function with one item in sequence."""
-    filename = private_file('TiffSequence/AT3_1m4_01.tif')
+    filename = _file('TiffSequence/AT3_1m4_01.tif')
     assert_array_equal(imread([filename]), imread(filename))
 
 
@@ -21307,25 +21425,25 @@ def test_sequence_imread_one():
 # Test packages depending on tifffile
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_dependent_roifile():
     """Test roifile.ImagejRoi class."""
-    from roifile import ImagejRoi
+    roifile = pytest.importorskip('roifile')
 
-    for roi in ImagejRoi.fromfile(private_file('imagej/IJMetadata.tif')):
-        assert roi == ImagejRoi.frombytes(roi.tobytes())
+    for roi in roifile.ImagejRoi.fromfile(_file('imagej/IJMetadata.tif')):
+        assert roi == roifile.ImagejRoi.frombytes(roi.tobytes())
         roi.coordinates()
         str(roi)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_dependent_lfdfiles():
     """Test lfdfiles conversion to TIFF."""
-    from lfdfiles import LfdFileSequence, SimfcsInt, SimfcsZ64
+    lfdfiles = pytest.importorskip('lfdfiles')
 
-    filename = private_file('SimFCS/simfcs.Z64')
+    filename = _file('SimFCS/simfcs.Z64')
     with TempFileName('depend_simfcsz_z64', ext='.tif') as outfile:
-        with SimfcsZ64(filename) as z64:
+        with lfdfiles.SimfcsZ64(filename) as z64:
             data = z64.asarray()
             z64.totiff(outfile)
         with TiffFile(outfile) as tif:
@@ -21335,44 +21453,44 @@ def test_dependent_lfdfiles():
             assert tif.series[0].dtype == numpy.float32
             assert_array_equal(data, tif.asarray())
 
-    filename = private_file('SimFCS/gpint')
-    with LfdFileSequence(
+    filename = _file('SimFCS/gpint')
+    with lfdfiles.LfdFileSequence(
         filename + '/v*001.int',
         pattern=r'v(?P<Channel>\d)(?P<Image>\d*).int',
-        imread=SimfcsInt,
+        imread=lfdfiles.SimfcsInt,
     ) as ims:
         assert ims.axes == 'CI'
         assert ims.asarray().shape == (2, 1, 256, 256)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_dependent_cmapfile():
     """Test cmapfile.lsm2cmap."""
-    from cmapfile import CmapFile, lsm2cmap
+    cmapfile = pytest.importorskip('cmapfile')
 
-    filename = private_file('LSM/3d_zfish_onephoton_zoom.lsm')
+    filename = _file('LSM/3d_zfish_onephoton_zoom.lsm')
     data = imread(filename)
-    with TempFileName('depend_cmapfile', ext='.cmap') as cmapfile:
-        lsm2cmap(filename, cmapfile, step=(1.0, 1.0, 20.0))
+    with TempFileName('depend_cmapfile', ext='.cmap') as cfile:
+        cmapfile.lsm2cmap(filename, cfile, step=(1.0, 1.0, 20.0))
         filename = os.path.join(
-            os.path.split(cmapfile)[0],
-            cmapfile.replace('.cmap', '.ch0000.cmap'),
+            os.path.split(cfile)[0],
+            cfile.replace('.cmap', '.ch0000.cmap'),
         )
-        with CmapFile(filename, mode='r') as cmap:
+        with cmapfile.CmapFile(filename, mode='r') as cmap:
             assert_array_equal(
                 cmap['map00000']['data00000'], data.squeeze()[:, 0, :, :]
             )
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_dependent_czifile():
     """Test czifile.CziFile."""
     # TODO: test LZW compressed czi file
-    from czifile import CziFile
+    czifile = pytest.importorskip('czifile')
 
-    filename = private_file('czi/pollen.czi')
+    filename = _file('czi/pollen.czi')
     # with pytest.warns(DeprecationWarning):
-    with CziFile(filename) as czi:
+    with czifile.CziFile(filename) as czi:
         assert czi.shape == (1, 1, 104, 365, 364, 1)
         assert czi.axes == 'TCZYX0'
         # verify data
@@ -21383,18 +21501,18 @@ def test_dependent_czifile():
         assert data[0, 0, 52, 182, 182, 0] == 10
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_LARGE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_LARGE, reason=REASON)
 def test_dependent_czi2tif():
     """Test czifile.czi2tif."""
-    from czifile.czifile import CziFile, czi2tif
+    czifile = pytest.importorskip('czifile.czifile')
 
-    filename = private_file('CZI/pollen.czi')
+    filename = _file('CZI/pollen.czi')
     # with pytest.warns(DeprecationWarning):
-    with CziFile(filename) as czi:
+    with czifile.CziFile(filename) as czi:
         metadata = czi.metadata()
         data = czi.asarray().squeeze()
     with TempFileName('depend_czi2tif') as tif:
-        czi2tif(filename, tif, bigtiff=False)
+        czifile.czi2tif(filename, tif, bigtiff=False)
         with TiffFile(tif) as t:
             im = t.asarray()
             assert t.pages[0].description == metadata
@@ -21405,15 +21523,17 @@ def test_dependent_czi2tif():
         assert_valid_tiff(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_LARGE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_LARGE, reason=REASON)
 def test_dependent_czi2tif_airy():
     """Test czifile.czi2tif with AiryScan."""
-    from czifile.czifile import czi2tif
+    czifile = pytest.importorskip('czifile.czifile')
 
-    filename = private_file('CZI/AiryscanSRChannel.czi')
+    filename = _file('CZI/AiryscanSRChannel.czi')
     with TempFileName('depend_czi2tif_airy') as tif:
         # with pytest.warns(DeprecationWarning):
-        czi2tif(filename, tif, verbose=True, truncate=True, bigtiff=False)
+        czifile.czi2tif(
+            filename, tif, verbose=True, truncate=True, bigtiff=False
+        )
         im = memmap(tif)
         assert im.shape == (32, 6, 1680, 1680)
         assert tuple(im[17, :, 1500, 1000]) == (95, 109, 3597, 0, 0, 0)
@@ -21421,15 +21541,15 @@ def test_dependent_czi2tif_airy():
         assert_valid_tiff(tif)
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_dependent_oiffile():
     """Test oiffile.OifFile."""
-    from oiffile import OifFile
+    oiffile = pytest.importorskip('oiffile')
 
-    filename = private_file(
+    filename = _file(
         'oib/MB231cell1_paxgfp_PDMSgasket_PMMAflat_30nm_378sli.oib'
     )
-    with OifFile(filename) as oib:
+    with oiffile.OifFile(filename) as oib:
         assert oib.is_oib
         tifs = oib.series[0]
         assert len(tifs) == 756
@@ -21444,25 +21564,21 @@ def test_dependent_oiffile():
         del data
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_LARGE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_LARGE, reason=REASON)
 @pytest.mark.xfail(reason='not compatible with Zarr 3')
 def test_dependent_tiffslide():
     """Test tiffslide package."""
     # https://github.com/bayer-science-for-a-better-life/tiffslide
-    try:
-        from tiffslide import TiffSlide
-    except ImportError:
-        pytest.skip('tiffslide missing')
+    tiffslide = pytest.importorskip('tiffslide', exc_type=ImportError)
 
-    filename = private_file('AperioSVS/CMU-1.svs')
-
-    with TiffSlide(filename) as slide:
+    filename = _file('AperioSVS/CMU-1.svs')
+    with tiffslide.TiffSlide(filename) as slide:
         region = slide.read_region((300, 400), 0, (512, 512), as_array=True)
         assert tuple(region[150, 200]) == (243, 246, 246)
         slide.get_thumbnail((200, 200))
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_LARGE or not IS_WIN, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_LARGE or not IS_WIN, reason=REASON)
 def test_dependent_opentile():
     """Test opentile package."""
     # https://github.com/imi-bigpicture/opentile
@@ -21475,7 +21591,7 @@ def test_dependent_opentile():
     except ImportError:
         pytest.skip('opentile missing')
 
-    filename = private_file('HamamatsuNDPI/CMU-1.ndpi')
+    filename = _file('HamamatsuNDPI/CMU-1.ndpi')
 
     turbo_path = os.path.join(
         os.path.dirname(turbojpeg.__file__), 'turbojpeg.dll'
@@ -21525,17 +21641,13 @@ def test_dependent_opentile():
         )
 
 
-@pytest.mark.skipif(SKIP_PUBLIC or SKIP_DASK, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_DASK, reason=REASON)
 def test_dependent_aicsimageio():
     """Test aicsimageio package."""
     # https://github.com/AllenCellModeling/aicsimageio
-    try:
-        import aicsimageio
-    except ImportError:
-        pytest.skip('aicsimageio or dependencies missing')
+    aicsimageio = pytest.importorskip('aicsimageio')
 
-    filename = public_file('tifffile/multiscene_pyramidal.ome.tif')
-
+    filename = _file('tifffile/multiscene_pyramidal.ome.tif')
     img = aicsimageio.AICSImage(filename)
     assert img.shape == (16, 2, 32, 256, 256)
     assert img.dims.order == 'TCZYX'
@@ -21555,7 +21667,7 @@ def test_dependent_aicsimageio():
 
 
 @pytest.mark.xfail(reason=REASON)
-@pytest.mark.skipif(SKIP_PUBLIC, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_dependent_imageio():
     """Test imageio package."""
     # https://github.com/imageio/imageio/blob/master/tests/test_tifffile.py
@@ -21566,8 +21678,8 @@ def test_dependent_imageio():
         pytest.skip('imageio missing')
 
     data = numpy.ones((10, 10, 3), numpy.uint8) * 2
-    filename2 = public_file('imageio/multipage_rgb.tif')
-    filename3 = public_file('imageio/test_tiff2.tiff')
+    filename2 = _file('imageio/multipage_rgb.tif')
+    filename3 = _file('imageio/test_tiff2.tiff')
 
     with TempFileName('depend_imageio') as filename1:
         # one image
@@ -21672,36 +21784,28 @@ def test_dependent_imageio():
             assert md['description'] == 'another desc'
 
 
-@pytest.mark.skipif(SKIP_PRIVATE, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
 def test_dependent_pims():
     """Test PIMS package."""
     # https://github.com/soft-matter/pims
-    try:
-        from pims import TiffStack_tifffile
-    except ImportError:
-        pytest.skip('pims or dependencies missing')
+    pims = pytest.importorskip('pims')
 
-    filename = private_file('pims/tiff_stack.tif')
-
-    ims = TiffStack_tifffile(filename)
+    filename = _file('pims/tiff_stack.tif')
+    ims = pims.TiffStack_tifffile(filename)
     assert_array_equal(ims.get_frame(2), imread(filename, key=2))
     repr(ims)
     ims.close()
 
 
-@pytest.mark.skipif(SKIP_PRIVATE or SKIP_ZARR, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_ZARR, reason=REASON)
 def test_dependent_kerchunk():
     """Test kerchunk package."""
     # https://github.com/fsspec/kerchunk/blob/main/tests/test_tiff.py
-    try:
-        import kerchunk.tiff
-    except ImportError:
-        pytest.skip('kerchunk or dependencies missing')
+    kerchunk_tiff = pytest.importorskip('kerchunk.tiff')
 
-    filename = private_file('kerchunk/lcmap_tiny_cog_2019.tif')
+    filename = _file('kerchunk/lcmap_tiny_cog_2019.tif')
     filename = pathlib.Path(filename).as_uri()
-
-    store = refs_as_store(kerchunk.tiff.tiff_to_zarr(filename))
+    store = refs_as_store(kerchunk_tiff.tiff_to_zarr(filename))
     z = zarr.open(store, zarr_format=2)
     assert list(z) == ['0', '1', '2']
     assert z.attrs['multiscales'] == [
@@ -21718,10 +21822,9 @@ def test_dependent_kerchunk():
     assert len(list(z.arrays())) == 3
     assert z.tree()
 
-    filename = private_file('kerchunk/example.tif')
+    filename = _file('kerchunk/example.tif')
     filename = pathlib.Path(filename).as_uri()
-
-    out = kerchunk.tiff.tiff_to_zarr(filename)
+    out = kerchunk_tiff.tiff_to_zarr(filename)
     store = refs_as_store(out)
     z = zarr.open(store, zarr_format=2)
 
