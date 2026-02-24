@@ -40,9 +40,9 @@ with open('issue125.json', 'w', encoding='utf-8', newline='\n') as jsonfile:
                     url=url,
                     # using an experimental API:
                     _shape=[len(files)],  # shape of file sequence
-                    _axes='T',  # axes of file sequence
+                    _axes=['T'],  # axes of file sequence
                     _index=[i],  # index of this file in sequence
-                    _append=i != 0,  # if True, only write index keys+value
+                    _append=i > 0,  # if True, only write index keys+value
                     _close=i == len(files) - 1,  # if True, no more appends
                     # groupname='0',  # required for non-pyramidal series
                 )
