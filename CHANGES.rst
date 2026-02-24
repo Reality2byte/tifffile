@@ -1,9 +1,18 @@
 Revisions
 ---------
 
+2026.2.24
+
+- Pass 5132 tests.
+- Remove deprecated TiffPages.pages and FileSequence.files (breaking).
+- Remove stripnull, stripascii, and bytestr functions (breaking).
+- Rewrite command line interfaces (breaking).
+- Support Experimenter and Project elements in OmeXml.
+- Refactor TiffPages.
+- Fix code review issues.
+
 2026.2.20
 
-- Pass 5134 tests.
 - Fix rounding of high resolutions (#318).
 - Fix code review issues.
 
@@ -534,7 +543,7 @@ Revisions
 
 - Fix TIFF.COMPESSOR typo (#85).
 - Round resolution numbers that do not fit in 64-bit rationals (#81).
-- Add support for JPEG XL compression.
+- Support JPEG XL compression.
 - Add Numcodecs compatible TIFF codec.
 - Rename ZarrFileStore to ZarrFileSequenceStore (breaking).
 - Add method to export fsspec ReferenceFileSystem from ZarrFileStore.
