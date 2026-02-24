@@ -259,6 +259,7 @@ def packbits_decode(encoded: bytes, /, *, out: Any = None) -> bytes:
         b'\xaa\xaa\xaa\x80\x00*\xaa\xaa\xaa\xaa\x80\x00*"\xaa\xaa\xaa\xaa\xaa'
 
     """
+    del out  # unused
     out = []
     out_extend = out.extend
     i = 0
