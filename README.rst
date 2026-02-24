@@ -35,7 +35,7 @@ many proprietary metadata formats.
 
 :Author: `Christoph Gohlke <https://www.cgohlke.com>`_
 :License: BSD-3-Clause
-:Version: 2026.2.20
+:Version: 2026.2.24
 :DOI: `10.5281/zenodo.6795860 <https://doi.org/10.5281/zenodo.6795860>`_
 
 Quickstart
@@ -87,9 +87,18 @@ This revision was tested with the following requirements and dependencies
 Revisions
 ---------
 
+2026.2.24
+
+- Pass 5132 tests.
+- Remove deprecated TiffPages.pages and FileSequence.files (breaking).
+- Remove stripnull, stripascii, and bytestr functions (breaking).
+- Rewrite command line interfaces (breaking).
+- Support Experimenter and Project elements in OmeXml.
+- Refactor TiffPages.
+- Fix code review issues.
+
 2026.2.20
 
-- Pass 5134 tests.
 - Fix rounding of high resolutions (#318).
 - Fix code review issues.
 
