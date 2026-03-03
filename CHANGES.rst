@@ -1,9 +1,15 @@
 Revisions
 ---------
 
+2026.3.3
+
+- Pass 5137 tests.
+- Do not convert TVIPS pixel sizes to m (#319).
+- Support writing packed integers with imagecodecs > 2026.1.14.
+- Support reading ccitt compressed images with imagecodecs > 2026.1.14.
+
 2026.2.24
 
-- Pass 5132 tests.
 - Remove deprecated TiffPages.pages and FileSequence.files (breaking).
 - Remove stripnull, stripascii, and bytestr functions (breaking).
 - Rewrite command line interfaces (breaking).
