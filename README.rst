@@ -24,7 +24,7 @@ compatible files in multi-page, volumetric, pyramidal, memory-mappable,
 tiled, predicted, or compressed form.
 
 Many compression and predictor schemes are supported via the imagecodecs
-library, including LZW, PackBits, Deflate, PIXTIFF, LZMA, LERC, Zstd,
+library, including LZW, PackBits, Deflate, CCITT, PIXTIFF, LZMA, LERC, Zstd,
 JPEG (8 and 12-bit, lossless), JPEG 2000, JPEG XR, JPEG XL, WebP, PNG, EER,
 Jetraw, 24-bit floating-point, and horizontal differencing.
 
@@ -35,7 +35,7 @@ many proprietary metadata formats.
 
 :Author: `Christoph Gohlke <https://www.cgohlke.com>`_
 :License: BSD-3-Clause
-:Version: 2026.2.24
+:Version: 2026.3.3
 :DOI: `10.5281/zenodo.6795860 <https://doi.org/10.5281/zenodo.6795860>`_
 
 Quickstart
@@ -87,9 +87,15 @@ This revision was tested with the following requirements and dependencies
 Revisions
 ---------
 
+2026.3.3
+
+- Pass 5137 tests.
+- Do not convert TVIPS pixel sizes to m (#319).
+- Support writing packed integers with imagecodecs > 2026.1.14.
+- Support reading ccitt compressed images with imagecodecs > 2026.1.14.
+
 2026.2.24
 
-- Pass 5132 tests.
 - Remove deprecated TiffPages.pages and FileSequence.files (breaking).
 - Remove stripnull, stripascii, and bytestr functions (breaking).
 - Rewrite command line interfaces (breaking).
@@ -200,11 +206,12 @@ Notes
 TIFF, the Tagged Image File Format, was created by the Aldus Corporation and
 Adobe Systems Incorporated.
 
-Tifffile supports a subset of the TIFF6 specification, mainly 8, 16, 32, and
-64-bit integer, 16, 32, and 64-bit float, grayscale and multi-sample images.
-Specifically, CCITT and OJPEG compression, chroma subsampling without JPEG
-compression, color space transformations, samples with differing types, or
-IPTC, ICC, and XMP metadata are not implemented.
+Tifffile supports a large subset of the TIFF6 specification, mainly 1-32,
+and 64-bit integer, 16, 32, and 64-bit float, grayscale and multi-sample
+images.
+Specifically, OJPEG compression, chroma subsampling without JPEG compression,
+color space transformations, samples with differing types, or IPTC, ICC,
+and XMP metadata are not implemented.
 
 Besides classic TIFF, tifffile supports several TIFF-like formats that do not
 strictly adhere to the TIFF6 specification. Some formats extend TIFF
