@@ -31,7 +31,7 @@
 
 """Unittests for the tifffile package.
 
-:Version: 2026.2.24
+:Version: 2026.3.3
 
 """
 
@@ -205,7 +205,6 @@ TEMP_DIR = os.path.join(HERE, '_tmp')
 DATA_DIR = os.path.join(HERE, 'data')
 
 IS_BE = sys.byteorder == 'big'
-IS_PYPY = 'pypy' in sys.version.lower()
 IS_WIN = sys.platform == 'win32'
 IS_CG = os.environ.get('COMPUTERNAME', '').startswith('CG-K')
 
@@ -258,10 +257,6 @@ if not SKIP_CODECS:
 zarr: ModuleType | None
 fsspec: ModuleType | None
 
-if IS_PYPY:
-    SKIP_ZARR = True
-    SKIP_DASK = True
-    SKIP_HTTP = True
 if SKIP_ZARR:
     zarr = None
 else:
@@ -1250,7 +1245,6 @@ def test_issue_micromanager(caplog):
         assert series.shape == (50, 5, 3, 256, 256)
 
 
-@pytest.mark.skipif(IS_PYPY, reason=REASON)
 def test_issue_pickle():
     """Test that TIFF constants are picklable."""
     # https://github.com/cgohlke/tifffile/issues/64
@@ -2578,7 +2572,7 @@ def test_issue_tile_generator(compression, predictor, samples):
     # https://github.com/cgohlke/tifffile/issues/185
 
     if compression == 'none' and predictor != 'none':
-        pytest.xfail('cannot use predictor without compression')
+        pytest.skip('xfail - cannot use predictor without compression')
 
     data = numpy.empty(
         (27, 23, samples) if samples else (27, 23, 1), numpy.uint8
@@ -3166,6 +3160,23 @@ def test_issue_shaped_pyramid():
         assert series.kind == 'generic'
         assert series.is_pyramidal
         assert len(series.levels) == 8
+
+
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
+def test_issue_tvips_pixelsize():
+    """Test read TVIPS PixelSize is nm."""
+    # https://github.com/cgohlke/tifffile/issues/319
+    filename = _file('tvips/TVIPS_bin4.tif')
+    with TiffFile(filename) as tif:
+        assert tif.is_tvips
+        tvips = tif.tvips_metadata
+        assert tvips['Version'] == 2
+        assert tvips['Magic'] == 0xAAAAAAAA
+        assert tvips['CommentV1'] == b''
+        assert tvips['ImageFolder'] == 'Images'
+        assert tvips['PixelSizeX'] == 1.4208036661148071
+        assert tvips['PhysicalPixelSizeY'] == 15600.0
+        assert__str__(tif)
 
 
 class TestExceptions:
@@ -4226,7 +4237,7 @@ def test_class_omexml(axes, autoaxes, shape, storedshape, dimorder, metadata):
     """Test OmeXml class."""
     dtype = numpy.uint8
     if not metadata and dimorder != 'XYCZT':
-        pytest.xfail('')
+        pytest.skip('xfail - missing axes metadata')
     metadata = {'axes': axes} if metadata else {}
     omexml = OmeXml()
     omexml.addimage(dtype, shape, storedshape, **metadata)
@@ -4391,8 +4402,6 @@ def test_class_omexml_attributes():
         '<Value><M K="key2">1</M><M K="key3">2</M></Value></MapAnnotation>',
     ):
         assert value in xml
-    if IS_PYPY:
-        pytest.xfail('lxml bug?')
     assert__repr__(omexml)
     assert_valid_omexml(xml)
     assert '\n  ' in str(omexml)
@@ -4452,8 +4461,6 @@ def test_class_omexml_datasets():
         '<Image ID="Image:5" Name="Image5">',
     ):
         assert value in xml
-    if IS_PYPY:
-        pytest.xfail('lxml bug?')
     assert__repr__(omexml)
     assert_valid_omexml(xml)
     assert '\n  ' in str(omexml)
@@ -6052,7 +6059,7 @@ def test_func_delta_codec(byteorder, kind):
     else:
         # floating point
         if byteorder == '>':
-            pytest.xfail('requires imagecodecs')
+            pytest.skip('xfail - requires imagecodecs')
         low, high = -1e5, 1e5
         data = RNG.integers(low, high, size=33 * 31 * 3, dtype='i4').reshape(
             (33, 31, 3)
@@ -7856,8 +7863,9 @@ def test_read_leadtools():
         assert page.imagelength == 75
         assert page.bitspersample == 1
         assert page.samplesperpixel == 1
-        with pytest.raises(ValueError):
-            data = page.asarray()
+        data = page.asarray()
+        assert data.shape == (75, 600)
+        assert data.dtype == numpy.bool_
         # 11- CCITT Group 3 2-D compression
         page = tif.pages[10]
         assert page.photometric == PHOTOMETRIC.MINISWHITE
@@ -7866,8 +7874,122 @@ def test_read_leadtools():
         assert page.imagelength == 75
         assert page.bitspersample == 1
         assert page.samplesperpixel == 1
-        with pytest.raises(ValueError):
-            data = page.asarray()
+        data = page.asarray()
+        assert data.shape == (75, 600)
+        assert data.dtype == numpy.bool_
+
+
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
+def test_read_ccitt_rle():
+    """Test read CCITT RLE (no make-up codes) compressed TIFF."""
+    filename = _file('icafe/g3_rle_no_makeup.tif')
+    with TiffFile(filename) as tif:
+        assert tif.byteorder == '<'
+        assert len(tif.pages) == 1
+        # assert page properties
+        page = tif.pages.first
+        assert page.compression == COMPRESSION.CCITTRLE
+        assert page.photometric == PHOTOMETRIC.MINISWHITE
+        assert page.imagewidth == 400
+        assert page.imagelength == 400
+        assert page.bitspersample == 1
+        assert page.samplesperpixel == 1
+        assert page.rowsperstrip == 400
+        assert page.tags['FillOrder'].value == 1
+        # assert data
+        image = page.asarray()
+        assert image.shape == (400, 400)
+        assert image.dtype == numpy.bool_
+        assert image.sum(dtype=numpy.uint32) == 80000
+        assert_aszarr_method(page, image)
+        assert__str__(tif)
+
+
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
+def test_read_ccitt_g3_multistrip():
+    """Test read CCITT Group 3 1-D multi-strip compressed TIFF."""
+    filename = _file('icafe/g3_1d_strip.TIF')
+    with TiffFile(filename) as tif:
+        assert tif.byteorder == '>'
+        assert len(tif.pages) == 1
+        # assert page properties
+        page = tif.pages.first
+        assert page.compression == COMPRESSION.CCITT_T4
+        assert page.photometric == PHOTOMETRIC.MINISWHITE
+        assert page.imagewidth == 2464
+        assert page.imagelength == 3248
+        assert page.bitspersample == 1
+        assert page.samplesperpixel == 1
+        assert page.rowsperstrip == 200
+        assert page.tags['FillOrder'].value == 2
+        assert len(page.dataoffsets) == 17
+        # assert data
+        image = page.asarray()
+        assert image.shape == (3248, 2464)
+        assert image.dtype == numpy.bool_
+        assert image.sum(dtype=numpy.uint32) == 602028
+        assert_aszarr_method(page, image)
+        assert__str__(tif)
+
+
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
+def test_read_ccitt_g3_no_bytecounts(caplog):
+    """Test read CCITT Group 3 compressed TIFF missing StripByteCounts tag."""
+    filename = _file('icafe/g3_1d_no_fill.TIF')
+    with TiffFile(filename) as tif:
+        assert 'missing data ByteCounts tag' in caplog.text
+        assert tif.byteorder == '<'
+        assert len(tif.pages) == 1
+        # assert page properties
+        page = tif.pages.first
+        assert page.compression == COMPRESSION.CCITT_T4
+        assert page.photometric == PHOTOMETRIC.MINISBLACK
+        assert page.imagewidth == 2420
+        assert page.imagelength == 3290
+        assert page.bitspersample == 1
+        assert page.samplesperpixel == 1
+        assert 'StripByteCounts' not in page.tags
+        # assert data
+        image = page.asarray()
+        assert image.shape == (3290, 2420)
+        assert image.dtype == numpy.bool_
+        assert image.sum(dtype=numpy.uint32) == 7723040
+        assert__str__(tif)
+
+
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
+def test_read_ccitt_g4():
+    """Test read CCITT Group 4 compressed multi-page TIFF."""
+    filename = _file('icafe/group4.tif')
+    with TiffFile(filename) as tif:
+        assert tif.byteorder == '<'
+        assert len(tif.pages) == 16
+        # assert first page properties
+        page = tif.pages.first
+        assert page.compression == COMPRESSION.CCITT_T6
+        assert page.photometric == PHOTOMETRIC.MINISWHITE
+        assert page.imagewidth == 2439
+        assert page.imagelength == 3296
+        assert page.bitspersample == 1
+        assert page.samplesperpixel == 1
+        assert page.tags['FillOrder'].value == 1
+        # assert first page data
+        image = page.asarray()
+        assert image.shape == (3296, 2439)
+        assert image.dtype == numpy.bool_
+        assert image.sum(dtype=numpy.uint32) == 873394
+        # assert last page properties
+        page = tif.pages[15]
+        assert page.compression == COMPRESSION.CCITT_T6
+        assert page.imagewidth == 2551
+        assert page.imagelength == 2439
+        # assert last page data
+        image = page.asarray()
+        assert image.shape == (2439, 2551)
+        assert image.dtype == numpy.bool_
+        assert image.sum(dtype=numpy.uint32) == 475457
+        assert_aszarr_method(page, image)
+        assert__str__(tif)
 
 
 @pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
@@ -8654,10 +8776,9 @@ def test_read_lena_be_rgb48():
         assert__str__(tif)
 
 
-@pytest.mark.skipif(SKIP_FILE or SKIP_LARGE or IS_PYPY, reason=REASON)
+@pytest.mark.skipif(SKIP_FILE or SKIP_LARGE, reason=REASON)
 def test_read_huge_ps5_memmap():
     """Test read 30000x30000 float32 contiguous."""
-    # TODO: segfault on pypy3.7-v7.3.5rc2-win64
     filename = _file('large/huge_ps5.tif')
     with TiffFile(filename) as tif:
         assert tif.byteorder == '<'
@@ -10272,11 +10393,9 @@ def test_read_ndpi_cmu2():
         assert page.compression == COMPRESSION.JPEG
         assert page.shape == (33792, 79872, 3)
         assert page.ndpi_tags['Magnification'] == 20.0
-        # with pytest.raises(RuntimeError):
-        if not IS_PYPY:
-            data = page.asarray()
-            assert data.shape == (33792, 79872, 3)
-            assert data.dtype == numpy.uint8
+        data = page.asarray()
+        assert data.shape == (33792, 79872, 3)
+        assert data.dtype == numpy.uint8
         # page 5
         page = tif.pages[5]
         assert page.is_ndpi
@@ -13144,6 +13263,8 @@ def test_read_tvips_tietz_16bit():
         tvips = tif.tvips_metadata
         assert tvips['Magic'] == 0xAAAAAAAA
         assert tvips['ImageFolder'] == 'B:\\4Marco\\Images\\Tiling_EMTOOLS\\'
+        assert tvips['PixelSizeX'] == 162.0779266357422
+        assert tvips['PhysicalPixelSizeY'] == 15600.0
         assert_aszarr_method(tif)
         assert__str__(tif)
 
@@ -15174,7 +15295,7 @@ WRITE_DATA = numpy.arange(
 def test_write(data, byteorder, bigtiff, compression, dtype, shape, tile):
     """Test TiffWriter with various options."""
     if compression is not None and (data is None or SKIP_CODECS):
-        pytest.xfail(REASON)
+        pytest.skip('xfail - ' + REASON)
     filename = 'write_{}_{}_{}_{}{}{}{}'.format(
         bigtiff,
         {'<': 'le', '>': 'be'}[byteorder],
@@ -15309,7 +15430,7 @@ def test_write_invalid_samples(samples):
 def test_write_codecs(mode, tile, codec):
     """Test write various compression."""
     if mode in {'gray', 'planar'} and codec == 'webp':
-        pytest.xfail("WebP doesn't support grayscale or planar mode")
+        pytest.skip("xfail - WebP doesn't support grayscale or planar mode")
     level = {'webp': -1, 'jpeg': 99}.get(codec)
     compressionargs = {'level': level} if level else None
     tile = (16, 16) if tile else None
@@ -15383,7 +15504,7 @@ def test_write_codecs(mode, tile, codec):
 def test_write_predictor(byteorder, dtype, tile, mode):
     """Test predictors."""
     if dtype[0] == 'f' and SKIP_CODECS:
-        pytest.xfail('requires imagecodecs')
+        pytest.skip('xfail - requires imagecodecs')
     tile = (32, 32) if tile else None
     f4 = imread(_file('tifffile/gray.f4.tif'))
     if mode == 'rgb':
@@ -15611,7 +15732,9 @@ def test_write_subidfs(ome, tiled, compressed, series, repeats, subifds):
     """Test write SubIFDs."""
     # use BigTIFF to prevent Windows explorer from locking the file
     if repeats > 1 and (compressed or tiled or ome):
-        pytest.xfail('contiguous not working with compression, tiles, ome')
+        pytest.skip(
+            'xfail - contiguous not working with compression, tiles, ome'
+        )
 
     data = [
         (RNG.random((5, 64, 64)) * 1023).astype(numpy.uint16),
@@ -16373,29 +16496,23 @@ def test_write_resolution_unit():
 
 
 @pytest.mark.skipif(SKIP_CODECS, reason=REASON)
-@pytest.mark.parametrize('bps', [1, 2, 7, 8])
+@pytest.mark.parametrize('bps', [1, 2, 4, 7, 8])
 @pytest.mark.parametrize('dtype', [numpy.uint8, numpy.uint16, numpy.uint32])
 def test_write_bitspersample(bps, dtype):
     """Test write with packints."""
     dtype = numpy.dtype(dtype)
     bps += (dtype.itemsize // 2) * 8
-    data = numpy.arange(256 * 256 * 3, dtype=dtype).reshape((256, 256, 3))
+    data = numpy.arange(256 * 255 * 3, dtype=dtype).reshape((256, 255, 3))
+    data %= 2**bps - 1
     with TempFileName(f'write_bitspersample_{dtype.char}{bps}') as filename:
-        # TODO: enable all cases once imagecodecs.packints_encode works
-        if bps == dtype.itemsize * 8:
-            imwrite(
-                filename, data, bitspersample=bps, photometric=PHOTOMETRIC.RGB
-            )
-            assert_array_equal(imread(filename), data)
-        else:
-            with pytest.raises(NotImplementedError):
-                imwrite(
-                    filename,
-                    data,
-                    bitspersample=bps,
-                    photometric=PHOTOMETRIC.RGB,
-                )
-                # assert_array_equal(imread(filename), data)
+        imwrite(
+            filename,
+            data,
+            bitspersample=bps,
+            photometric=PHOTOMETRIC.RGB,
+            rowsperstrip=77,
+        )
+        assert_array_equal(imread(filename), data)
 
 
 def test_write_bitspersample_fail():
@@ -19894,7 +20011,7 @@ def test_write_imagej(byteorder, dtype, shape):
     # TODO: test compression and bigtiff ?
     dtype = numpy.dtype(dtype)
     if dtype != numpy.uint8 and shape[-1] in {3, 4}:
-        pytest.xfail('ImageJ only supports uint8 RGB')
+        pytest.skip('xfail - ImageJ only supports uint8 RGB')
     data = random_data(dtype, shape)
     filename = 'write_imagej_{}_{}_{}'.format(
         {'<': 'le', '>': 'be'}[byteorder], dtype, str(shape).replace(' ', '')
