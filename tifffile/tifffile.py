@@ -51,7 +51,7 @@ compatible files in multi-page, volumetric, pyramidal, memory-mappable,
 tiled, predicted, or compressed form.
 
 Many compression and predictor schemes are supported via the imagecodecs
-library, including LZW, PackBits, Deflate, PIXTIFF, LZMA, LERC, Zstd,
+library, including LZW, PackBits, Deflate, CCITT, PIXTIFF, LZMA, LERC, Zstd,
 JPEG (8 and 12-bit, lossless), JPEG 2000, JPEG XR, JPEG XL, WebP, PNG, EER,
 Jetraw, 24-bit floating-point, and horizontal differencing.
 
@@ -62,7 +62,7 @@ many proprietary metadata formats.
 
 :Author: `Christoph Gohlke <https://www.cgohlke.com>`_
 :License: BSD-3-Clause
-:Version: 2026.2.24
+:Version: 2026.3.3
 :DOI: `10.5281/zenodo.6795860 <https://doi.org/10.5281/zenodo.6795860>`_
 
 Quickstart
@@ -114,9 +114,15 @@ This revision was tested with the following requirements and dependencies
 Revisions
 ---------
 
+2026.3.3
+
+- Pass 5137 tests.
+- Do not convert TVIPS pixel sizes to m (#319).
+- Support writing packed integers with imagecodecs > 2026.1.14.
+- Support reading ccitt compressed images with imagecodecs > 2026.1.14.
+
 2026.2.24
 
-- Pass 5132 tests.
 - Remove deprecated TiffPages.pages and FileSequence.files (breaking).
 - Remove stripnull, stripascii, and bytestr functions (breaking).
 - Rewrite command line interfaces (breaking).
@@ -227,11 +233,12 @@ Notes
 TIFF, the Tagged Image File Format, was created by the Aldus Corporation and
 Adobe Systems Incorporated.
 
-Tifffile supports a subset of the TIFF6 specification, mainly 8, 16, 32, and
-64-bit integer, 16, 32, and 64-bit float, grayscale and multi-sample images.
-Specifically, CCITT and OJPEG compression, chroma subsampling without JPEG
-compression, color space transformations, samples with differing types, or
-IPTC, ICC, and XMP metadata are not implemented.
+Tifffile supports a large subset of the TIFF6 specification, mainly 1-32,
+and 64-bit integer, 16, 32, and 64-bit float, grayscale and multi-sample
+images.
+Specifically, OJPEG compression, chroma subsampling without JPEG compression,
+color space transformations, samples with differing types, or IPTC, ICC,
+and XMP metadata are not implemented.
 
 Besides classic TIFF, tifffile supports several TIFF-like formats that do not
 strictly adhere to the TIFF6 specification. Some formats extend TIFF
@@ -804,7 +811,7 @@ Inspect the TIFF file from the command line::
 
 from __future__ import annotations
 
-__version__ = '2026.2.24'
+__version__ = '2026.3.3'
 
 __all__ = [
     'CHUNKMODE',
@@ -3433,7 +3440,10 @@ class TiffWriter:
                 bps: Any = bitspersample,
                 axis: int = compressionaxis,
             ) -> bytes:
-                return imagecodecs.packints_encode(data, bps, axis=axis)
+                runlen = data.shape[-1]
+                if axis == -2:
+                    runlen *= data.shape[-2]
+                return imagecodecs.packints_encode(data, bps, runlen=runlen)
 
         else:
             compressionfunc = None
@@ -7982,6 +7992,28 @@ class TiffPage:
         del databytecounts
 
         if (
+            self.compression in {2, 3, 4}
+            and len(self.dataoffsets) == 1
+            and self.dataoffsets[0] > 0
+            and (not self.databytecounts or self.databytecounts[0] == 0)
+        ):
+            # estimate missing or zero StripByteCounts for single-strip
+            # CCITT fax compressed images as remainder of file or distance
+            # to next IFD
+            dataoffset = self.dataoffsets[0]
+            try:
+                nextifd = self._nextifd()
+            except Exception:
+                nextifd = 0
+            if nextifd > dataoffset:
+                self.databytecounts = (nextifd - dataoffset,)
+            else:
+                self.databytecounts = (fh.size - dataoffset,)
+            logger().warning(
+                f'{self!r} estimating ByteCounts for CCITT compressed strip'
+            )
+
+        if (
             self.imagewidth == 0
             and self.imagelength == 0
             and self.dataoffsets
@@ -8734,6 +8766,54 @@ class TiffPage:
 
             return cache(decode_jetraw)
 
+        if self.compression in {2, 3, 4}:
+            # CCITT compression: RLE, Fax3, Fax4
+            # codecs need explicit strip/tile height and width
+            use_bitorder = self.fillorder == 2
+            if self.compression == 2:
+                ccitt_decompress = imagecodecs.ccittrle_decode
+            elif self.compression == 3:
+                t4options = self.tags.valueof(292)
+                if t4options is None:
+                    t4options = 0
+
+                def ccitt_decompress(
+                    data, rows, width, *, t4options=t4options
+                ):
+                    return imagecodecs.ccittfax3_decode(
+                        data, rows, width, t4options=t4options
+                    )
+
+            else:
+                ccitt_decompress = imagecodecs.ccittfax4_decode
+
+            def decode_ccitt(
+                data: bytes | None,
+                index: int,
+                /,
+                *,
+                jpegtables: bytes | None = None,
+                jpegheader: bytes | None = None,
+                _fullsize: bool = False,
+            ) -> DecodeResult:
+                # return decoded CCITT segment, its shape, and indices
+                segmentindex, shape = indices(index)
+                if data is None:
+                    if _fullsize:
+                        shape = pad_none(shape)
+                    return data, segmentindex, shape
+                if use_bitorder:
+                    data = imagecodecs.bitorder_decode(data)
+                data_array: NDArray[Any] = ccitt_decompress(
+                    data, shape[1], stwidth
+                )
+                data_array = reshape(data_array, segmentindex, shape)
+                if _fullsize:
+                    data_array, shape = pad(data_array, shape)
+                return data_array, segmentindex, shape
+
+            return cache(decode_ccitt)
+
         if self.compression in TIFF.IMAGE_COMPRESSIONS:
             # presume codecs always return correct dtype, native byte order...
             if self.fillorder == 2:
@@ -9344,7 +9424,7 @@ class TiffPage:
                 raise ValueError(msg)
             if uint8:
                 if colormap.max() > 255:
-                    colormap = colormap >> 8
+                    colormap = colormap >> 8  # type: ignore[assignment]
                 colormap = colormap.astype(numpy.uint8)
             if 'S' in keyframe.axes:
                 data = data[..., 0] if keyframe.planarconfig == 1 else data[0]
@@ -15122,6 +15202,8 @@ class OmeXmlError(Exception):
 class OmeXml:
     """Create OME-TIFF XML metadata.
 
+    https://www.openmicroscopy.org/Schemas/OME/
+
     Parameters:
         **metadata:
             Additional OME-XML attributes or elements to be stored.
@@ -16179,6 +16261,18 @@ class CompressionCodec(Mapping[int, Callable[..., object]]):
         codec: Callable[..., Any]
         try:
             match key:
+                case 2:
+                    if self._encode:
+                        raise NotImplementedError
+                    codec = imagecodecs.ccittrle_decode
+                case 3:
+                    if self._encode:
+                        raise NotImplementedError
+                    codec = imagecodecs.ccittfax3_decode
+                case 4:
+                    if self._encode:
+                        raise NotImplementedError
+                    codec = imagecodecs.ccittfax4_decode
                 case 5:
                     if self._encode:
                         codec = imagecodecs.lzw_encode
@@ -16509,8 +16603,10 @@ class COMPRESSION(enum.IntEnum):
     NONE = 1
     """No compression (default)."""
     CCITTRLE = 2  # CCITT 1D
-    CCITT_T4 = 3  # T4/Group 3 Fax
-    CCITT_T6 = 4  # T6/Group 4 Fax
+    CCITTFAX3 = 3  # T4/Group 3 Fax
+    CCITT_T4 = 3
+    CCITTFAX4 = 4  # T6/Group 4 Fax
+    CCITT_T6 = 4
     LZW = 5
     """Lempel-Ziv-Welch."""
     OJPEG = 6  # old-style JPEG
@@ -20115,10 +20211,11 @@ def read_tvips_header(
                 )
             else:
                 result[name] = header[name].tolist()
-        # convert nm to m
-        for axis in 'XY':
-            result['PhysicalPixelSize' + axis] /= 1e9
-            result['PixelSize' + axis] /= 1e9
+        # https://github.com/cgohlke/tifffile/issues/319
+        # do not convert nm to m
+        # for axis in 'XY':
+        #     result['PhysicalPixelSize' + axis] /= 1e9
+        #     result['PixelSize' + axis] /= 1e9
     elif header['Version'] != 1:
         logger().warning(
             '<tifffile.read_tvips_header> unknown TVIPS header version'
@@ -24744,8 +24841,9 @@ def imshow(
             with contextlib.suppress(Exception):
                 figure.canvas.manager.window.title(window_title)
         size = len(title.splitlines()) if title else 1
+        nsliders = sum(1 for axis in range(dims) if data.shape[axis] > 1)
         pyplot.subplots_adjust(
-            bottom=0.03 * (dims + 2),
+            bottom=0.03 * (nsliders + 2),
             top=0.98 - size * 0.03,
             left=0.1,
             right=0.95,
@@ -24807,27 +24905,30 @@ def imshow(
     if dims:
         current = list((0,) * dims)
         curaxdat = [0, data[tuple(current)].squeeze()]
+        slider_axes = [axis for axis in range(dims) if data.shape[axis] > 1]
         sliders = [
             Slider(
-                ax=pyplot.axes((0.125, 0.03 * (axis + 1), 0.725, 0.025)),
+                ax=pyplot.axes((0.125, 0.03 * (i + 1), 0.725, 0.025)),
                 label=f'Dimension {axis}',
                 valmin=0,
                 valmax=data.shape[axis] - 1,
                 valinit=0,
                 valfmt=f'%.0f [{data.shape[axis]}]',
             )
-            for axis in range(dims)
+            for i, axis in enumerate(slider_axes)
         ]
         for slider in sliders:
             slider.drawon = False
 
-        def set_image(current, sliders=sliders, data=data):
+        def set_image(
+            current, sliders=sliders, slider_axes=slider_axes, data=data
+        ):
             # change image and redraw canvas
             curaxdat[1] = data[tuple(current)].squeeze()
             image.set_data(curaxdat[1])
-            for ctrl, index in zip(sliders, current, strict=True):
+            for ctrl, axis in zip(sliders, slider_axes, strict=True):
                 ctrl.eventson = False
-                ctrl.set_val(index)
+                ctrl.set_val(current[axis])
                 ctrl.eventson = True
             figure.canvas.draw()
 
@@ -24864,8 +24965,8 @@ def imshow(
                 on_changed(0, axis)
 
         figure.canvas.mpl_connect('key_press_event', on_keypressed)
-        for axis, ctrl in enumerate(sliders):
-            ctrl.on_changed(lambda k, a=axis: on_changed(k, a))  # type: ignore[misc]
+        for i, axis in enumerate(slider_axes):
+            sliders[i].on_changed(lambda k, a=axis: on_changed(k, a))  # type: ignore[misc]
 
     if show:
         pyplot.show()
