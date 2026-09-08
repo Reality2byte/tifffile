@@ -31,7 +31,7 @@
 
 """Unittests for the tifffile package.
 
-:Version: 2026.8.23
+:Version: 2026.9.9
 
 """
 
@@ -4969,6 +4969,10 @@ def test_class_tiffseries():
         with TiffFile(filename) as tif:
             series0 = tif.series[0]
             assert series0.kind == 'shaped'
+            assert tif.series[0].shape == (1, 1, 32, 33)
+            assert tif.series(squeeze=None)[0].shape == (1, 1, 32, 33)
+            assert tif.series(squeeze=False)[0].shape == (1, 1, 32, 33)
+            assert tif.series(squeeze=True)[0].shape == (32, 33)
             # squeeze=None (default) preserves shaped series dimensions
             arr_none = tif.asarray(squeeze=None)
             assert arr_none.shape == (1, 1, 32, 33)
@@ -18388,9 +18392,10 @@ def test_write_truncate():
             series = tif.series[0]
             assert series.is_truncated
             assert series.kind == 'shaped'
-            assert series.shape == (4, 5, 6)
+            assert series.shape == (4, 5, 6, 1)
             assert len(series._pages) == 1
             assert len(series) == 1
+            assert tif.series(squeeze=True)[0].shape == (4, 5, 6)
             data = tif.asarray()
             assert data.shape == shape
             assert_aszarr_method(tif, data)
@@ -24302,6 +24307,19 @@ def test_dependent_bioio():
     img.set_scene('Image:0')
     lazy_t1 = img.get_image_dask_data('ZCYX', T=1)
     assert_array_equal(lazy_t1.compute(), t1)
+
+
+@pytest.mark.skipif(SKIP_FILE or SKIP_DASK, reason=REASON)
+def test_dependent_bioio_issue54():
+    """Test bioio-tifffile issue #54."""
+    # https://github.com/bioio-devs/bioio-tifffile/issues/54
+    from bioio_tifffile import Reader
+
+    with TempFileName('depend_bioio') as fname:
+        imwrite(fname, numpy.ones((1, 20, 30)))
+        img = Reader(fname)
+        da = img.dask_data.compute()
+        assert da.shape == (1, 20, 30)
 
 
 @pytest.mark.skipif(SKIP_FILE, reason=REASON)
