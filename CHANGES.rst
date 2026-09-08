@@ -1,6 +1,10 @@
 Revisions
 =========
 
+2026.9.9
+
+- Fix TiffSeries(squeeze=None) incorrectly squeezes 'shaped' series (breaking).
+
 2026.8.23
 
 - Add methods to delete pages from main IFD chain and erase their content.
