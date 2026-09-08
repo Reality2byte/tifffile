@@ -37,7 +37,7 @@ many proprietary metadata formats.
 
 :Author: `Christoph Gohlke <https://www.cgohlke.com>`_
 :License: BSD-3-Clause
-:Version: 2026.8.23
+:Version: 2026.9.9
 :DOI: `10.5281/zenodo.6795860 <https://doi.org/10.5281/zenodo.6795860>`_
 
 Quickstart
@@ -74,14 +74,14 @@ This revision was tested with the following requirements and dependencies
 (other versions may work):
 
 - `CPython <https://www.python.org>`_ 3.12.10, 3.13.15, 3.14.7, 3.15.0rc 64-bit
-- `Numpy <https://pypi.org/project/numpy>`_ 2.5.2
+- `Numpy <https://pypi.org/project/numpy>`_ 2.5.3
 - `Imagecodecs <https://pypi.org/project/imagecodecs/>`_ 2026.8.16
   (required for encoding or decoding LZW, JPEG, etc. compressed segments)
 - `Xarray <https://pypi.org/project/xarray>`_ 2026.7.0
   (required only for reading xarray DataArrays)
 - `Matplotlib <https://pypi.org/project/matplotlib/>`_ 3.11.1
   (required for plotting)
-- `Lxml <https://pypi.org/project/lxml/>`_ 6.1.2
+- `Lxml <https://pypi.org/project/lxml/>`_ 6.1.3
   (required only for validating and printing XML)
 - `Zarr <https://pypi.org/project/zarr/>`_ 3.3.0
   (required only for using Zarr stores)
@@ -90,6 +90,10 @@ This revision was tested with the following requirements and dependencies
 
 Revisions
 ---------
+
+2026.9.9
+
+- Fix TiffSeries(squeeze=None) incorrectly squeezes 'shaped' series (breaking).
 
 2026.8.23
 
@@ -157,47 +161,6 @@ Revisions
 - Drop support for numpy 2.0 (SPEC0, #324).
 
 2026.4.11
-
-- Add option to write zarr format 3 fsspec reference file system.
-- Support reading TIFF with embedded C2PA manifest.
-- Sync API of imagecodecs fallback implementations (#320).
-- Do not use defusedxml.
-- Drop support for Python 3.11.
-
-2026.3.3
-
-- Do not convert TVIPS pixel sizes to m (#319).
-- Support writing packed integers with imagecodecs > 2026.1.14.
-- Support reading ccitt compressed images with imagecodecs > 2026.1.14.
-
-2026.2.24
-
-- Remove deprecated TiffPages.pages and FileSequence.files (breaking).
-- Remove stripnull, stripascii, and bytestr functions (breaking).
-- Rewrite command line interfaces (breaking).
-- Support Experimenter and Project elements in OmeXml.
-- Refactor TiffPages.
-- Fix code review issues.
-
-2026.2.20
-
-- Fix rounding of high resolutions (#318).
-- Fix code review issues.
-
-2026.2.16
-
-- Optimize reading multi-file pyramidal OME TIFF files.
-
-2026.2.15
-
-- Support reading multi-file pyramidal OME TIFF files (image.sc/t/119259).
-
-2026.1.28
-
-- Deprecate colormaped parameter in imagej_description (use colormapped).
-- Fix code review issues.
-
-2026.1.14
 
 - …
 
@@ -657,6 +620,7 @@ metadata such as ImageJ or OME-TIFF image descriptions):
     >>> with TiffFile('temp.tif', mode='r+') as tif:
     ...     tif.pages[-1].delete()  # delete the last page
     ...     tif.pages.delete([0, 1], erase=True)  # erase the first two pages
+    ...
 
 Create a TIFF file from a generator of tiles:
 
