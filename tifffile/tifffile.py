@@ -64,7 +64,7 @@ many proprietary metadata formats.
 
 :Author: `Christoph Gohlke <https://www.cgohlke.com>`_
 :License: BSD-3-Clause
-:Version: 2026.8.23
+:Version: 2026.9.9
 :DOI: `10.5281/zenodo.6795860 <https://doi.org/10.5281/zenodo.6795860>`_
 
 Quickstart
@@ -101,14 +101,14 @@ This revision was tested with the following requirements and dependencies
 (other versions may work):
 
 - `CPython <https://www.python.org>`_ 3.12.10, 3.13.15, 3.14.7, 3.15.0rc 64-bit
-- `Numpy <https://pypi.org/project/numpy>`_ 2.5.2
+- `Numpy <https://pypi.org/project/numpy>`_ 2.5.3
 - `Imagecodecs <https://pypi.org/project/imagecodecs/>`_ 2026.8.16
   (required for encoding or decoding LZW, JPEG, etc. compressed segments)
 - `Xarray <https://pypi.org/project/xarray>`_ 2026.7.0
   (required only for reading xarray DataArrays)
 - `Matplotlib <https://pypi.org/project/matplotlib/>`_ 3.11.1
   (required for plotting)
-- `Lxml <https://pypi.org/project/lxml/>`_ 6.1.2
+- `Lxml <https://pypi.org/project/lxml/>`_ 6.1.3
   (required only for validating and printing XML)
 - `Zarr <https://pypi.org/project/zarr/>`_ 3.3.0
   (required only for using Zarr stores)
@@ -117,6 +117,10 @@ This revision was tested with the following requirements and dependencies
 
 Revisions
 ---------
+
+2026.9.9
+
+- Fix TiffSeries(squeeze=None) incorrectly squeezes 'shaped' series (breaking).
 
 2026.8.23
 
@@ -184,47 +188,6 @@ Revisions
 - Drop support for numpy 2.0 (SPEC0, #324).
 
 2026.4.11
-
-- Add option to write zarr format 3 fsspec reference file system.
-- Support reading TIFF with embedded C2PA manifest.
-- Sync API of imagecodecs fallback implementations (#320).
-- Do not use defusedxml.
-- Drop support for Python 3.11.
-
-2026.3.3
-
-- Do not convert TVIPS pixel sizes to m (#319).
-- Support writing packed integers with imagecodecs > 2026.1.14.
-- Support reading ccitt compressed images with imagecodecs > 2026.1.14.
-
-2026.2.24
-
-- Remove deprecated TiffPages.pages and FileSequence.files (breaking).
-- Remove stripnull, stripascii, and bytestr functions (breaking).
-- Rewrite command line interfaces (breaking).
-- Support Experimenter and Project elements in OmeXml.
-- Refactor TiffPages.
-- Fix code review issues.
-
-2026.2.20
-
-- Fix rounding of high resolutions (#318).
-- Fix code review issues.
-
-2026.2.16
-
-- Optimize reading multi-file pyramidal OME TIFF files.
-
-2026.2.15
-
-- Support reading multi-file pyramidal OME TIFF files (image.sc/t/119259).
-
-2026.1.28
-
-- Deprecate colormaped parameter in imagej_description (use colormapped).
-- Fix code review issues.
-
-2026.1.14
 
 - …
 
@@ -636,6 +599,7 @@ metadata such as ImageJ or OME-TIFF image descriptions):
 >>> with TiffFile('temp.tif', mode='r+') as tif:
 ...     tif.pages[-1].delete()  # delete the last page
 ...     tif.pages.delete([0, 1], erase=True)  # erase the first two pages
+...
 
 Create a TIFF file from a generator of tiles:
 
@@ -852,7 +816,7 @@ Inspect the TIFF file from the command line::
 
 from __future__ import annotations
 
-__version__ = '2026.8.23'
+__version__ = '2026.9.9'
 
 __all__ = [
     'CHUNKMODE',
@@ -1638,11 +1602,10 @@ def memmap(
             Index of pyramid level to memory-map (default is 0).
             Ignored if ``page`` is set.
         squeeze:
-            Remove length-1 dimensions from the memory-mapped array shape,
-            except X and Y.
-            If ``False``, preserve all dimensions.
-            If ``None`` (default), remove length-1 dimensions except for
-            ``'shaped'`` series.
+            Remove length-1 dimensions from image array, except X and Y.
+            If ``None`` (default), squeeze except for ``'shaped'`` series.
+            If ``True``, always squeeze.
+            If ``False``, do not squeeze.
             For single pages, ``None`` is treated as ``True``.
         mode:
             Memory-map file open mode for existing files.
@@ -1693,9 +1656,10 @@ def memmap(
                     series = 0
                 if level is None:
                     level = 0
-                s = tif._get_series(kind)[series]
-                if squeeze or (squeeze is None and s.kind != 'shaped'):
-                    s = tif._get_series(kind, squeeze=True)[series]
+                if squeeze is None or squeeze:
+                    s = tif._get_series(kind, squeeze=squeeze)[series]
+                else:
+                    s = tif._get_series(kind)[series]
                 tiffseries = s.levels[level]
                 if tiffseries.dataoffset is None:
                     msg = 'image data are not memory-mappable'
@@ -4551,8 +4515,8 @@ class TiffFile:
     _superres: int  # EER super-resolution level
     # cache of TiffFile instances in multifile series
     _files: dict[str | None, TiffFile]
-    # cache of TiffPageSeries instances by (shape, squeeze) key
-    _series: dict[tuple[str | None, bool], list[TiffPageSeries]]
+    # cache of TiffPageSeries instances by (kind, squeeze) key
+    _series: dict[tuple[str | None, bool | None], list[TiffPageSeries]]
     # cache of TiffPage.decode functions
     _decoders: dict[int, Callable[..., DecodeResult]]
 
@@ -4772,15 +4736,15 @@ class TiffFile:
                 as array. The default is 0.
             squeeze:
                 Remove length-1 dimensions from image array, except X and Y.
-                If ``False``, preserve all dimensions.
+                If ``None`` (default), squeeze except for ``'shaped'`` series.
+                If ``True``, always squeeze.
+                If ``False``, do not squeeze.
                 Single pages are returned as 5D array of shape
                 :py:attr:`TiffPage.shaped`.
                 For series, the shape of the returned array also includes
                 singlet dimensions specified in some file formats.
                 For example, ImageJ series and most commonly also OME series,
                 are returned in TZCYXS order.
-                If ``None`` (default), remove length-1 dimensions except
-                for ``'shaped'`` series.
             out:
                 Output array, *'memmap'*, or file for image data.
                 By default, a new NumPy array is created.
@@ -4972,9 +4936,9 @@ class TiffFile:
                 as DataArray. The default is 0.
             squeeze:
                 Remove length-1 dimensions from image array, except X and Y.
-                If ``False``, preserve all dimensions.
-                If ``None`` (default), remove length-1 dimensions except
-                for ``'shaped'`` series.
+                If ``None`` (default), squeeze except for ``'shaped'`` series.
+                If ``True``, always squeeze.
+                If ``False``, do not squeeze.
             maxworkers:
                 Maximum number of threads to concurrently decode data.
                 See :py:meth:`TiffFile.asarray` for details.
@@ -4991,9 +4955,10 @@ class TiffFile:
             msg = 'empty xarray DataArrays not supported'
             raise NotImplementedError(msg)
         if key is None and series is None:
-            s = self._get_series(kind)[0]
-            if squeeze or (squeeze is None and s.kind != 'shaped'):
-                s = self._get_series(kind, squeeze=True)[0]
+            if squeeze is None or squeeze:
+                s = self._get_series(kind, squeeze=squeeze)[0]
+            else:
+                s = self._get_series(kind)[0]
             return s.asxarray(
                 level=level,
                 squeeze=squeeze,
@@ -5006,9 +4971,10 @@ class TiffFile:
             pages = self.pages
         else:
             if not isinstance(series, TiffPageSeries):
-                s = self._get_series(kind)[series]
-                if squeeze or (squeeze is None and s.kind != 'shaped'):
-                    s = self._get_series(kind, squeeze=True)[series]
+                if squeeze is None or squeeze:
+                    s = self._get_series(kind, squeeze=squeeze)[series]
+                else:
+                    s = self._get_series(kind)[series]
                 series = s
             if key is None:
                 return series.asxarray(
@@ -5057,9 +5023,9 @@ class TiffFile:
                 By default, all levels are included as a multi-scale group.
             squeeze:
                 Remove length-1 dimensions from image array, except X and Y.
-                If ``False``, preserve all dimensions.
-                If ``None`` (default), remove length-1 dimensions except
-                for ``'shaped'`` series.
+                If ``None`` (default), squeeze except for ``'shaped'`` series.
+                If ``True``, always squeeze.
+                If ``False``, do not squeeze.
             **kwargs:
                 Additional arguments passed to :py:meth:`TiffPage.aszarr`
                 or :py:meth:`TiffPageSeries.aszarr`.
@@ -5069,22 +5035,24 @@ class TiffFile:
             msg = 'empty Zarr arrays not supported'
             raise NotImplementedError(msg)
         if key is None and series is None:
-            s = self._get_series(kind)[0]
-            if squeeze or (squeeze is None and s.kind != 'shaped'):
-                s = self._get_series(kind, squeeze=True)[0]
-            return s.aszarr(level=level, **kwargs)
+            if squeeze is None or squeeze:
+                s = self._get_series(kind, squeeze=squeeze)[0]
+            else:
+                s = self._get_series(kind)[0]
+            return s.aszarr(level=level, squeeze=False, **kwargs)
 
         pages: Any
         if series is None:
             pages = self.pages
         else:
             if not isinstance(series, TiffPageSeries):
-                s = self._get_series(kind)[series]
-                if squeeze or (squeeze is None and s.kind != 'shaped'):
-                    s = self._get_series(kind, squeeze=True)[series]
+                if squeeze is None or squeeze:
+                    s = self._get_series(kind, squeeze=squeeze)[series]
+                else:
+                    s = self._get_series(kind)[series]
                 series = s
             if key is None:
-                return series.aszarr(level=level, **kwargs)
+                return series.aszarr(level=level, squeeze=False, **kwargs)
             if level is not None:
                 series = series.levels[level]
             pages = series
@@ -5101,9 +5069,11 @@ class TiffFile:
 
         Call with parameters to get differently configured series::
 
-            tif.series                    # default series, squeezed
-            tif.series(squeeze=False)     # unsqueezed
-            tif.series(kind='generic')    # specific kind
+            tif.series                  # default series,
+                                        # squeezed except 'shaped'
+            tif.series(squeeze=True)    # always squeezed
+            tif.series(squeeze=False)   # unsqueezed
+            tif.series(kind='generic')  # specific kind
 
         Notes:
             After accessing this property, ``TiffFile.pages`` might
@@ -5118,7 +5088,7 @@ class TiffFile:
         kind: str | None = None,
         /,
         *,
-        squeeze: bool = False,
+        squeeze: bool | None = False,
     ) -> list[TiffPageSeries]:
         """Return list of series, computing and caching if necessary.
 
@@ -5127,13 +5097,16 @@ class TiffFile:
                 If ``None``, dispatch through format-specific parsers.
                 If a string, compute the specified kind directly.
             squeeze:
-                If ``True``, return series with length-1 dimensions removed.
+                Remove length-1 dimensions from series, except X and Y.
+                If ``None``, squeeze except for ``'shaped'`` series.
+                If ``True``, always squeeze.
+                If ``False`` (default), do not squeeze.
 
         """
         if (kind, squeeze) in self._series:
             return self._series[(kind, squeeze)]
 
-        if squeeze:
+        if squeeze is None or squeeze:
             attributes = (
                 'dims',
                 'sizes',
@@ -5150,6 +5123,9 @@ class TiffFile:
             unsqueezed = self._get_series(kind)
             squeezed = []
             for s in unsqueezed:
+                if squeeze is None and s.kind == 'shaped':
+                    squeezed.append(s)
+                    continue
                 shape, axes, _ = squeeze_axes(s._shape, s._axes)
                 if shape == s._shape:
                     squeezed.append(s)
@@ -5182,7 +5158,7 @@ class TiffFile:
                         sq_levels.append(sq_level)
                 sq.levels = sq_levels
                 squeezed.append(sq)
-            self._series[(kind, True)] = squeezed
+            self._series[(kind, squeeze)] = squeezed
             return squeezed
 
         if not self.pages:
@@ -7656,6 +7632,7 @@ class TiffPage:
                 memory-mapped array.
             squeeze:
                 Remove length-1 dimensions from image array, except X and Y.
+                If ``True`` (default), squeeze.
                 If ``False``, return the image array with normalized
                 5-dimensional shape :py:attr:`TiffPage.shaped`.
             lock:
@@ -7969,6 +7946,8 @@ class TiffPage:
             erase:
                 Zero image data, tag values, and IFD structs of deleted page.
                 Requires the file to be opened in read/write mode.
+                IFD structures referenced by IFD-type tags, such as SubIFDs,
+                EXIF IFD, or GPS IFD, are not erased.
 
         """
         if len(self._index) != 1:
@@ -9883,6 +9862,8 @@ class TiffPages(Sequence[TiffPage | TiffFrame]):
             erase:
                 Zero image data, tag values, and IFD structs of deleted pages.
                 Requires the file to be opened in read/write mode.
+                IFD structures referenced by IFD-type tags, such as SubIFDs,
+                EXIF IFD, or GPS IFD, are not erased.
 
         Raises:
             PermissionError: File is not writable for erasing.
@@ -12057,9 +12038,9 @@ class TiffPageSeries(Sequence[TiffPage | TiffFrame | None]):
                 By default, the base level is returned.
             squeeze:
                 Remove length-1 dimensions from image array, except X and Y.
-                If ``False``, preserve all dimensions.
-                If ``None`` (default), remove length-1 dimensions except
-                for ``'shaped'`` series.
+                If ``None`` (default), squeeze except for ``'shaped'`` series.
+                If ``True``, always squeeze.
+                If ``False``, do not squeeze.
             **kwargs: Passed to :py:meth:`asarray`.
 
         Returns:
@@ -12074,13 +12055,13 @@ class TiffPageSeries(Sequence[TiffPage | TiffFrame | None]):
             raise ValueError(msg)
 
         series: TiffPageSeries = self
-        if squeeze or (squeeze is None and self.kind != 'shaped'):
+        if squeeze is None or squeeze:
             unsqueezed = self.parent._get_series()
             if (
                 self._index < len(unsqueezed)
                 and unsqueezed[self._index] is self
             ):
-                squeezed = self.parent._get_series(squeeze=True)
+                squeezed = self.parent._get_series(squeeze=squeeze)
                 if self._index < len(squeezed):
                     series = squeezed[self._index]
         if level is not None:
@@ -12116,9 +12097,9 @@ class TiffPageSeries(Sequence[TiffPage | TiffFrame | None]):
                 By default, a multi-resolution store is returned.
             squeeze:
                 Remove length-1 dimensions from image array, except X and Y.
-                If ``False``, preserve all dimensions.
-                If ``None`` (default), remove length-1 dimensions except
-                for ``'shaped'`` series.
+                If ``None`` (default), squeeze except for ``'shaped'`` series.
+                If ``True``, always squeeze.
+                If ``False``, do not squeeze.
             **kwargs:
                 Additional arguments passed to :py:class:`ZarrTiffStore`.
 
@@ -12130,7 +12111,7 @@ class TiffPageSeries(Sequence[TiffPage | TiffFrame | None]):
         from .zarr import ZarrTiffStore
 
         series: TiffPageSeries = self
-        if squeeze:
+        if squeeze is True:
             squeezed = self.parent._get_series(squeeze=True)
             if self._index < len(squeezed):
                 series = squeezed[self._index]
@@ -12250,7 +12231,9 @@ class TiffSeries(Sequence[TiffPageSeries]):
             If ``None``, the default series are returned.
         squeeze:
             Remove length-1 dimensions from series shapes, except X and Y.
-            If ``False``, series shapes include all dimensions.
+            If ``None`` (default), squeeze except for ``'shaped'`` series.
+            If ``True``, always squeeze.
+            If ``False``, do not squeeze.
 
     Examples:
         >>> with TiffFile('temp.ome.tif') as tif:
@@ -12266,7 +12249,7 @@ class TiffSeries(Sequence[TiffPageSeries]):
     """
 
     _parent: TiffFile
-    _squeeze: bool
+    _squeeze: bool | None
     _kind: str | None
 
     def __init__(
@@ -12275,7 +12258,7 @@ class TiffSeries(Sequence[TiffPageSeries]):
         /,
         *,
         kind: str | None = None,
-        squeeze: bool = True,
+        squeeze: bool | None = None,
     ) -> None:
         self._parent = parent
         self._kind = kind
@@ -12285,7 +12268,7 @@ class TiffSeries(Sequence[TiffPageSeries]):
         self,
         *,
         kind: str | None = None,
-        squeeze: bool = True,
+        squeeze: bool | None = None,
     ) -> TiffSeries:
         """Return new TiffSeries with specified kind and squeeze settings.
 
@@ -12295,7 +12278,9 @@ class TiffSeries(Sequence[TiffPageSeries]):
                 If ``None``, the default series are returned.
             squeeze:
                 Remove length-1 dimensions from series shapes, except X and Y.
-                If ``False``, series shapes include all dimensions.
+                If ``None`` (default), squeeze except for ``'shaped'`` series.
+                If ``True``, always squeeze.
+                If ``False``, do not squeeze.
 
         """
         return TiffSeries(self._parent, squeeze=squeeze, kind=kind)
