@@ -31,7 +31,7 @@
 
 """Unittests for the tifffile package.
 
-:Version: 2026.9.9
+:Version: 2026.9.15
 
 """
 
@@ -15968,6 +15968,46 @@ def test_read_mmstack_trzc():
         assert_array_equal(
             data[:, 1], imread(filename, is_mmstack=False, series=1)
         )
+        assert__str__(tif)
+
+
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
+def test_read_mmstack_zstep_str():
+    """Test read MM v1.4 MMStack where z-step_um is JSON string."""
+    # https://github.com/cgohlke/tifffile/issues/334
+    filename = _file(
+        'MMStack'
+        '/ExampleData_diSPIM_stagescan_3slices_1channel_MMStack_Pos0.ome.tif'
+    )
+    with TiffFile(filename) as tif:
+        assert tif.is_micromanager
+        assert tif.is_mmstack
+        assert tif.is_ome
+        assert tif.is_imagej
+        assert not tif.is_ndtiff
+        assert tif.byteorder == '<'
+        assert len(tif.pages) == 3
+        assert len(tif.series) == 1
+        # assert metadata
+        meta = tif.micromanager_metadata
+        assert meta is not None
+        summ = meta['Summary']
+        assert isinstance(summ['z-step_um'], str)  # MM 1.4 writes as string
+        assert summ['MicroManagerVersion'].startswith('1.4.')
+        # assert series properties
+        series = tif.series[0]
+        assert series.shape == (3, 2048, 2048)
+        assert series.axes == 'ZYX'
+        assert series.kind == 'mmstack'
+        # Z coordinates must be resolved from the string value '2.9033'
+        assert series.coords['Z'] == pytest.approx([0.0, 2.9033, 5.8066])
+        # assert data
+        data = tif.asarray()
+        assert isinstance(data, numpy.ndarray)
+        assert data.shape == (3, 2048, 2048)
+        assert data.dtype == numpy.uint16
+        # reading without mmstack must give same pixel data
+        assert_array_equal(data, imread(filename, is_mmstack=False))
         assert__str__(tif)
 
 
