@@ -1,6 +1,10 @@
 Revisions
 =========
 
+2026.9.15
+
+- Fix MMStack series when numeric Summary metadata values are strings (#334).
+
 2026.9.9
 
 - Fix TiffSeries(squeeze=None) incorrectly squeezes 'shaped' series (breaking).
