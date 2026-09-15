@@ -37,7 +37,7 @@ many proprietary metadata formats.
 
 :Author: `Christoph Gohlke <https://www.cgohlke.com>`_
 :License: BSD-3-Clause
-:Version: 2026.9.9
+:Version: 2026.9.15
 :DOI: `10.5281/zenodo.6795860 <https://doi.org/10.5281/zenodo.6795860>`_
 
 Quickstart
@@ -51,15 +51,12 @@ Install the tifffile package and all dependencies from the
 Tifffile is also available in other package repositories such as Anaconda,
 Debian, and MSYS2.
 
-The tifffile library is type annotated and documented via docstrings::
-
-    python -c "import tifffile; help(tifffile)"
+See `Examples`_ and `Documentation <https://www.cgohlke.com/docs/tifffile/>`_
+for using the programming interface.
 
 Tifffile can be used as a console script to inspect and preview TIFF files::
 
     python -m tifffile --help
-
-See `Examples`_ for using the programming interface.
 
 Source code and support are available on
 `GitHub <https://github.com/cgohlke/tifffile>`_.
@@ -90,6 +87,10 @@ This revision was tested with the following requirements and dependencies
 
 Revisions
 ---------
+
+2026.9.15
+
+- Fix MMStack series when numeric Summary metadata values are strings (#334).
 
 2026.9.9
 
