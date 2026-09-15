@@ -64,7 +64,7 @@ many proprietary metadata formats.
 
 :Author: `Christoph Gohlke <https://www.cgohlke.com>`_
 :License: BSD-3-Clause
-:Version: 2026.9.9
+:Version: 2026.9.15
 :DOI: `10.5281/zenodo.6795860 <https://doi.org/10.5281/zenodo.6795860>`_
 
 Quickstart
@@ -78,15 +78,12 @@ Install the tifffile package and all dependencies from the
 Tifffile is also available in other package repositories such as Anaconda,
 Debian, and MSYS2.
 
-The tifffile library is type annotated and documented via docstrings::
-
-    python -c "import tifffile; help(tifffile)"
+See `Examples`_ and `Documentation <https://www.cgohlke.com/docs/tifffile/>`_
+for using the programming interface.
 
 Tifffile can be used as a console script to inspect and preview TIFF files::
 
     python -m tifffile --help
-
-See `Examples`_ for using the programming interface.
 
 Source code and support are available on
 `GitHub <https://github.com/cgohlke/tifffile>`_.
@@ -117,6 +114,10 @@ This revision was tested with the following requirements and dependencies
 
 Revisions
 ---------
+
+2026.9.15
+
+- Fix MMStack series when numeric Summary metadata values are strings (#334).
 
 2026.9.9
 
@@ -816,7 +817,7 @@ Inspect the TIFF file from the command line::
 
 from __future__ import annotations
 
-__version__ = '2026.9.9'
+__version__ = '2026.9.15'
 
 __all__ = [
     'CHUNKMODE',
@@ -20685,7 +20686,10 @@ def series_mmstack(tif: TiffFile, /) -> list[TiffPageSeries] | None:
     attrs: dict[str, Any] = {}
 
     units: dict[str, str] | None = None
-    pxsize = summary.get('PixelSize_um', 0.0)
+    try:
+        pxsize = float(summary.get('PixelSize_um', 0.0))
+    except (TypeError, ValueError):
+        pxsize = 0.0
     if pxsize > 0:
         attrs['PixelSize_um'] = pxsize
         units = {'X': 'micrometer', 'Y': 'micrometer'}
@@ -20697,13 +20701,19 @@ def series_mmstack(tif: TiffFile, /) -> list[TiffPageSeries] | None:
             coords['Y'] = (0.0, sizey * pxsize)
 
     if 'Z' in full_axes:
-        zstep = summary.get('z-step_um', 0.0)
+        try:
+            zstep = float(summary.get('z-step_um', 0.0))
+        except (TypeError, ValueError):
+            zstep = 0.0
         if zstep != 0:
             sizez = full_shape[full_axes.index('Z')]
             coords['Z'] = (0.0, sizez * abs(zstep))
 
     if 'T' in full_axes:
-        interval = summary.get('Interval_ms', 0.0)
+        try:
+            interval = float(summary.get('Interval_ms', 0.0))
+        except (TypeError, ValueError):
+            interval = 0.0
         if interval > 0:
             sizet = full_shape[full_axes.index('T')]
             coords['T'] = (0.0, sizet * interval)
@@ -20896,7 +20906,10 @@ def series_ndtiff(tif: TiffFile, /) -> list[TiffPageSeries] | None:
         summ = mm.get('Summary', {})
 
         # pixel size for X/Y coords and as attr
-        pxsize = summ.get('PixelSize_um', 0.0)
+        try:
+            pxsize = float(summ.get('PixelSize_um', 0.0))
+        except (TypeError, ValueError):
+            pxsize = 0.0
         if pxsize > 0:
             attrs['PixelSize_um'] = pxsize
             units = {'X': 'micrometer', 'Y': 'micrometer'}
@@ -20910,13 +20923,20 @@ def series_ndtiff(tif: TiffFile, /) -> list[TiffPageSeries] | None:
         # Z coord from z-step_um
         if 'Z' in axes:
             zstep = summ.get('z-step_um', 0.0)
+            try:
+                zstep = float(zstep)
+            except (TypeError, ValueError):
+                zstep = 0.0
             if zstep > 0:
                 sizez = shape[axes.index('Z')]
                 coords['Z'] = (0.0, sizez * zstep)
 
         # T coord from Interval_ms
         if 'T' in axes:
-            interval = summ.get('Interval_ms', 0.0)
+            try:
+                interval = float(summ.get('Interval_ms', 0.0))
+            except (TypeError, ValueError):
+                interval = 0.0
             if interval > 0:
                 sizet = shape[axes.index('T')]
                 coords['T'] = (0.0, sizet * interval)
