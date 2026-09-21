@@ -64,7 +64,7 @@ many proprietary metadata formats.
 
 :Author: `Christoph Gohlke <https://www.cgohlke.com>`_
 :License: BSD-3-Clause
-:Version: 2026.9.15
+:Version: 2026.9.20
 :DOI: `10.5281/zenodo.6795860 <https://doi.org/10.5281/zenodo.6795860>`_
 
 Quickstart
@@ -103,17 +103,24 @@ This revision was tested with the following requirements and dependencies
   (required for encoding or decoding LZW, JPEG, etc. compressed segments)
 - `Xarray <https://pypi.org/project/xarray>`_ 2026.7.0
   (required only for reading xarray DataArrays)
-- `Matplotlib <https://pypi.org/project/matplotlib/>`_ 3.11.1
+- `Matplotlib <https://pypi.org/project/matplotlib/>`_ 3.11.2
   (required for plotting)
 - `Lxml <https://pypi.org/project/lxml/>`_ 6.1.3
   (required only for validating and printing XML)
-- `Zarr <https://pypi.org/project/zarr/>`_ 3.3.0
+- `Zarr <https://pypi.org/project/zarr/>`_ 3.4.0
   (required only for using Zarr stores)
 - `Kerchunk <https://pypi.org/project/kerchunk/>`_ 0.2.10
   (required only for opening ReferenceFileSystem files)
 
 Revisions
 ---------
+
+2026.9.20
+
+- Fix TiffPage.delete corrupting NDPI files.
+- Fix unwrapping offsets in LSM files > 4GB with T, P, and M dimensions.
+- Support Mikroscan and Motic formats (structurally identical to SVS).
+- Support MedScan Trestle series and metadata.
 
 2026.9.15
 
@@ -238,8 +245,7 @@ handling multi-dimensional data, or working around format constraints:
   frame data in the file and the image stack. The TIFF structures and metadata
   are often corrupted or wrong. Tifffile can read MMStack files.
 - **Carl Zeiss LSM** files store all IFDs below 4 GB and wrap around 32-bit
-  StripOffsets pointing to image data above 4 GB. The StripOffsets of each
-  series and position require separate unwrapping. The StripByteCounts tag
+  StripOffsets pointing to image data above 4 GB. The StripByteCounts tag
   contains the number of bytes for the uncompressed data. Tifffile can read
   LSM files of any size.
 - **MetaMorph STK** files contain additional image planes stored
@@ -257,10 +263,11 @@ handling multi-dimensional data, or working around format constraints:
   JPEG compressed segments with dimensions >65530 or missing restart markers
   cannot be decoded with common JPEG libraries. Tifffile works around this
   limitation by separately decoding the MCUs between restart markers, which
-  performs poorly. BitsPerSample, SamplesPerPixel, and
-  PhotometricInterpretation tags may contain wrong values, which can be
-  corrected using the value of tag 65441.
+  performs poorly.
+  BitsPerSample, SamplesPerPixel, and PhotometricInterpretation tags may
+  contain wrong values, which can be corrected using the value of tag 65441.
   ASCII string tag values are not stored inline.
+  Tag values and may be shared between multiple pages.
 - **Philips TIFF** slides store padded ImageWidth and ImageLength tag values
   for tiled pages. The values can be corrected using the DICOM_PIXEL_SPACING
   attributes of the XML formatted description of the first page. Tile offsets
@@ -270,6 +277,11 @@ handling multi-dimensional data, or working around format constraints:
   in the XMP tag. Volumetric scans are stored using the ImageDepth extension.
   Tifffile can read BIF and decode individual tiles but does not perform
   stitching.
+- **MedScan Trestle** slides are pyramidal tiled TIFF files where tiles
+  in each level overlap their neighbors. The per-level overlap values are
+  specified in the OverlapsXY field of the ImageDescription tag.
+  Tifffile can read Trestle files and decode individual tiles but does not
+  perform stitching.
 - **ScanImage** optionally allows corrupted non-BigTIFF files > 2 GB.
   The values of StripOffsets and StripByteCounts can be recovered using the
   constant differences of the offsets of IFD and tag values throughout the
@@ -817,7 +829,7 @@ Inspect the TIFF file from the command line::
 
 from __future__ import annotations
 
-__version__ = '2026.9.15'
+__version__ = '2026.9.20'
 
 __all__ = [
     'CHUNKMODE',
@@ -5254,35 +5266,33 @@ class TiffFile:
         indices: NDArray[Any]
         pages = self.pages
         npages = len(pages)
-        series = self.series[0]
-        axes = series.axes
 
-        # find positions
-        positions = 1
-        for i in 0, 1:
-            if axes[i] in 'PM':
-                positions *= series.shape[i]
+        assert self.lsm_metadata is not None
+        t = max(1, int(self.lsm_metadata.get('DimensionTime', 1)))
+        p = max(1, int(self.lsm_metadata.get('DimensionP', 0)))
+        m = max(1, int(self.lsm_metadata.get('DimensionM', 0)))
 
-        # make time axis first
-        indices = numpy.arange(npages).reshape((-1, 2))
-        if positions > 1:
-            ntimes = 0
-            for i in 1, 2:
-                if axes[i] == 'T':
-                    ntimes = series.shape[i]
-                    break
-            if ntimes:
-                div, mod = divmod(npages, 2 * positions * ntimes)
-                if mod != 0:
-                    msg = 'mod != 0'
-                    raise RuntimeError(msg)
-                shape = (positions, ntimes, div, 2)
-                indices = numpy.arange(product(shape)).reshape(shape)
-                indices = numpy.moveaxis(indices, 1, 0)
-
-        # images of reduced page might be stored first
-        if pages[0].dataoffsets[0] > pages[1].dataoffsets[0]:
-            indices = indices[..., ::-1]
+        if sum(v > 1 for v in (m, p, t)) >= 2:
+            # reorder pages to match T, P, M acquisition order
+            npairs = npages // 2
+            outer = m * p * t
+            if npairs % outer:
+                msg = f'cannot unwrap strip offsets: {npairs=} % {outer=} > 0'
+                raise ValueError(msg)
+            # inner covers any inner dimensions (Z, C in planar mode, etc)
+            inner = npairs // outer
+            indices = numpy.arange(npages).reshape((m, p, t, inner, 2))
+            # images of reduced page might be stored first
+            if pages[0].dataoffsets[0] > pages[1].dataoffsets[0]:
+                indices = indices[..., ::-1]
+            # reorder from IFD order (M outer, T inner) to
+            # physical acquisition order (T outer, P middle, M inner)
+            indices = indices.transpose(2, 1, 0, 3, 4)
+        else:
+            indices = numpy.arange(npages).reshape((-1, 2))
+            # images of reduced page might be stored first
+            if pages[0].dataoffsets[0] > pages[1].dataoffsets[0]:
+                indices = indices[..., ::-1]
 
         # unwrap offsets
         wrap = 0
@@ -5632,6 +5642,33 @@ class TiffFile:
             return False
         return page0.is_tiled and page0.is_svs
 
+    @property
+    def is_mikroscan(self) -> bool:
+        """File is Mikroscan format."""
+        try:
+            page0 = self.pages.first
+        except IndexError:
+            return False
+        return page0.is_tiled and page0.is_mikroscan
+
+    @property
+    def is_motic(self) -> bool:
+        """File is Motic format."""
+        try:
+            page0 = self.pages.first
+        except IndexError:
+            return False
+        return page0.is_tiled and page0.is_motic
+
+    @property
+    def is_trestle(self) -> bool:
+        """File is Trestle format."""
+        try:
+            page0 = self.pages.first
+        except IndexError:
+            return False
+        return page0.is_tiled and page0.is_trestle
+
     @cached_property
     def is_c2pa(self) -> bool:
         """File contains embedded C2PA manifest in last page.
@@ -5942,6 +5979,13 @@ class TiffFile:
         if not self.is_pilatus:
             return None
         return pilatus_description_metadata(self.pages.first.description)
+
+    @cached_property
+    def trestle_metadata(self) -> dict[str, Any] | None:
+        """Trestle metadata from ImageDescription tag."""
+        if not self.is_trestle:
+            return None
+        return trestle_description_metadata(self.pages.first.description)
 
     @cached_property
     def micromanager_metadata(self) -> dict[str, Any] | None:
@@ -6438,11 +6482,11 @@ class TiffPage:
             # to next IFD
             dataoffset = self.dataoffsets[0]
             try:
-                nextifd = self._nextifd()
+                nextifdoffset = self._nextifd_offset()
             except Exception:
-                nextifd = 0
-            if nextifd > dataoffset:
-                self.databytecounts = (nextifd - dataoffset,)
+                nextifdoffset = 0
+            if nextifdoffset > dataoffset:
+                self.databytecounts = (nextifdoffset - dataoffset,)
             else:
                 self.databytecounts = (fh.size - dataoffset,)
             logger().warning(
@@ -7929,8 +7973,8 @@ class TiffPage:
             raise NotImplementedError
         return data
 
-    def _nextifd(self) -> int:
-        """Return offset to next IFD from file."""
+    def _nextifd_offset(self) -> int:
+        """Return offset of next IFD from file."""
         fh = self.parent.filehandle
         tiff = self.parent.tiff
         fh.seek(TiffPages._nextifd_fieldpos(fh, self.offset, tiff))
@@ -7949,6 +7993,8 @@ class TiffPage:
                 Requires the file to be opened in read/write mode.
                 IFD structures referenced by IFD-type tags, such as SubIFDs,
                 EXIF IFD, or GPS IFD, are not erased.
+                For NDPI files, out-of-line tag values are not erased as they
+                may be shared between multiple pages.
 
         """
         if len(self._index) != 1:
@@ -8977,6 +9023,26 @@ class TiffPage:
         return self.description[:7] == 'Aperio '
 
     @property
+    def is_mikroscan(self) -> bool:
+        """Page contains Mikroscan metadata."""
+        return self.description[:25] == 'Mikroscan Image Structure'
+
+    @property
+    def is_motic(self) -> bool:
+        """Page contains Motic metadata."""
+        return self.description[:6] == 'Motic '
+
+    @property
+    def is_trestle(self) -> bool:
+        """Page contains Trestle metadata."""
+        return (
+            self.is_tiled
+            and self.software is not None
+            and self.software[:7] == 'MedScan'
+            and self.description is not None
+        )
+
+    @property
     def is_huron(self) -> bool:
         """Page contains Huron metadata."""
         return self.is_tiled and self.tags.valueof(271, '')[:6] == 'Huron '
@@ -9280,9 +9346,9 @@ class TiffFrame:
         if keyframe is not None:
             self.keyframe = keyframe
 
-    def _nextifd(self) -> int:
-        """Return offset to next IFD from file."""
-        return TiffPage._nextifd(self)  # type: ignore[arg-type]
+    def _nextifd_offset(self) -> int:
+        """Return offset of next IFD from file."""
+        return TiffPage._nextifd_offset(self)  # type: ignore[arg-type]
 
     def delete(self, **kwargs: Any) -> None:
         """Remove frame from main IFD chain.
@@ -9837,9 +9903,6 @@ class TiffPages(Sequence[TiffPage | TiffFrame]):
         """Return file position of next IFD offset field in IFD at offset."""
         fh.seek(offset)
         tagno = struct.unpack(tiff.tagnoformat, fh.read(tiff.tagnosize))[0]
-        if tiff.is_ndpi:
-            # NDPI has 16-byte tags plus an extra 8-byte block before next-IFD
-            return offset + tiff.tagnosize + tagno * 16 + 8
         return offset + tiff.tagnosize + tagno * tiff.tagsize
 
     def delete(
@@ -9865,6 +9928,8 @@ class TiffPages(Sequence[TiffPage | TiffFrame]):
                 Requires the file to be opened in read/write mode.
                 IFD structures referenced by IFD-type tags, such as SubIFDs,
                 EXIF IFD, or GPS IFD, are not erased.
+                For NDPI files, out-of-line tag values are not erased as they
+                may be shared between multiple pages.
 
         Raises:
             PermissionError: File is not writable for erasing.
@@ -9965,18 +10030,19 @@ class TiffPages(Sequence[TiffPage | TiffFrame]):
                             while remaining > 0:
                                 fh.write(zeros[: min(remaining, 65536)])
                                 remaining -= 65536
-                    # erase out-of-line tag values
-                    for tag in page.aspage().tags:
-                        vbc = tag.valuebytecount
-                        if (
-                            vbc > tiff.tagoffsetthreshold
-                            and tag.valueoffset >= 8
-                        ):
-                            fh.seek(tag.valueoffset)
-                            remaining = vbc
-                            while remaining > 0:
-                                fh.write(zeros[: min(remaining, 65536)])
-                                remaining -= 65536
+                    if not tiff.is_ndpi:
+                        # erase out-of-line tag values
+                        for tag in page.aspage().tags:
+                            vbc = tag.valuebytecount
+                            if (
+                                vbc > tiff.tagoffsetthreshold
+                                and tag.valueoffset >= 8
+                            ):
+                                fh.seek(tag.valueoffset)
+                                remaining = vbc
+                                while remaining > 0:
+                                    fh.write(zeros[: min(remaining, 65536)])
+                                    remaining -= 65536
                     # erase IFD structure (tagno + tags + next-IFD field)
                     ifd_end = (
                         TiffPages._nextifd_fieldpos(
@@ -17386,6 +17452,9 @@ class _TIFF:
             'stk': series_stk,
             'sis': series_sis,
             'svs': series_svs,
+            'mikroscan': series_mikroscan,
+            'motic': series_motic,
+            'trestle': series_trestle,
             'huron': series_huron,
             'scn': series_scn,
             'qpi': series_qpi,
@@ -21201,6 +21270,105 @@ def series_avs(tif: TiffFile, /) -> list[TiffPageSeries] | None:
     return series
 
 
+def series_trestle(tif: TiffFile, /) -> list[TiffPageSeries] | None:
+    """Return image series in Trestle file."""
+    # Trestle is a single-file pyramidal tiled TIFF with overlapping tiles.
+    # Each level's tiles overlap their neighbors. The overlap values are
+    # specified in the OverlapsXY field of the first page's ImageDescription.
+    # Tifffile does not stitch overlapping tiles.
+    pages = tif.pages
+    if not pages or not pages.first.is_trestle:
+        return None
+
+    pages.cache = True
+    pages.useframes = False
+    pages.set_keyframe(0)
+    pages._load()
+    page0 = pages.first
+
+    # Trestle stores µm/px directly in XResolution/YResolution (non-standard)
+    coords: dict[str, Any] = {}
+    mpp_x: float | None = None
+    mpp_y: float | None = None
+    units: dict[str, str] | None = None
+    try:
+        xres, yres = page0.resolution  # raw tag values = µm/px
+        if 0 < xres < 100 and 0 < yres < 100:  # plausible µm/px range
+            mpp_x = xres
+            mpp_y = yres
+            units = {'X': 'micrometer', 'Y': 'micrometer'}
+            coords['X'] = (0.0, page0.imagewidth * mpp_x)
+            coords['Y'] = (0.0, page0.imagelength * mpp_y)
+    except Exception as exc:
+        logger().warning(
+            f'{tif!r} Trestle series resolution failed: {exc!r:.128}'
+        )
+
+    # all tiled pages form a single pyramid series
+    baseline = TiffPageSeries(
+        [page0],
+        page0.shape,
+        page0.dtype,
+        page0.axes,
+        name='Baseline',
+        kind='trestle',
+        coords=coords or None,
+        units=units,
+    )
+
+    # add resolution levels
+    for page in pages[1:]:
+        level_page = page.aspage()
+        if level_page.is_tiled:
+            level_coords: dict[str, Any] = {}
+            level_units: dict[str, str] | None = None
+            if mpp_x is not None and mpp_y is not None:
+                # all levels represent the same physical extent as baseline
+                level_units = {'X': 'micrometer', 'Y': 'micrometer'}
+                level_coords['X'] = (0.0, page0.imagewidth * mpp_x)
+                level_coords['Y'] = (0.0, page0.imagelength * mpp_y)
+            baseline.levels.append(
+                TiffPageSeries(
+                    [page],
+                    page.shape,
+                    page.dtype,
+                    page.axes,
+                    name='Resolution',
+                    kind='trestle',
+                    coords=level_coords or None,
+                    units=level_units,
+                )
+            )
+
+    logger().warning(f'{tif!r} Trestle series tiles are not stitched')
+
+    return [baseline]
+
+
+def series_mikroscan(tif: TiffFile, /) -> list[TiffPageSeries] | None:
+    """Return image series in Mikroscan file."""
+    # Mikroscan format is structurally identical to Aperio SVS
+    series = series_svs(tif)
+    if series:
+        for s in series:
+            s.kind = 'mikroscan'
+            for level in s.levels:
+                level.kind = 'mikroscan'
+    return series
+
+
+def series_motic(tif: TiffFile, /) -> list[TiffPageSeries] | None:
+    """Return image series in Motic file."""
+    # Motic format is structurally identical to Aperio SVS
+    series = series_svs(tif)
+    if series:
+        for s in series:
+            s.kind = 'motic'
+            for level in s.levels:
+                level.kind = 'motic'
+    return series
+
+
 def series_svs(tif: TiffFile, /) -> list[TiffPageSeries] | None:
     """Return image series in Aperio SVS file."""
     series = []
@@ -24334,16 +24502,17 @@ def pilatus_description_metadata(description: str, /) -> dict[str, Any]:
 
 
 def svs_description_metadata(description: str, /) -> dict[str, Any]:
-    """Return metadata from Aperio image description.
+    """Return metadata from Aperio, Mikroscan, or Motic image description.
 
-    The Aperio image description format is unspecified. Expect failures.
+    These formats use pipe-delimited key=value pairs with similar structure.
+    Expect failures for unspecified or variant formats.
 
     >>> svs_description_metadata('Aperio Image Library v1.0|AppMag = 20')
     {'Header': 'Aperio Image Library v1.0', 'AppMag': 20}
 
     """
-    if not description.startswith('Aperio '):
-        msg = 'invalid Aperio image description'
+    if not description.startswith(('Aperio ', 'Mikroscan ', 'Motic ')):
+        msg = 'invalid SVS image description'
         raise ValueError(msg)
     result: dict[str, Any] = {}
     items = description.split('|')
@@ -24355,6 +24524,37 @@ def svs_description_metadata(description: str, /) -> dict[str, Any]:
             # skip empty items or those missing '='
             continue
         result[key.strip()] = astype(value.strip())
+    return result
+
+
+def trestle_description_metadata(description: str, /) -> dict[str, Any]:
+    """Return metadata from Trestle image description.
+
+    The Trestle image description format contains semicolon-delimited
+    key=value pairs.
+
+    >>> trestle_description_metadata('OverlapsXY = 10; MedScan v3.4')
+    {'OverlapsXY': 10, 'MedScan v3.4': None}
+
+    """
+    result: dict[str, Any] = {}
+    for item_ in description.split(';'):
+        item = item_.strip()
+        if '=' in item:
+            try:
+                key, value = item.split('=', maxsplit=1)
+                result[key.strip()] = astype(value.strip())
+            except ValueError:
+                continue
+        elif item:
+            # store items without '=' as keys with None value
+            result[item] = None
+
+        overlap = result.get('OverlapsXY')
+        if isinstance(overlap, str):
+            with contextlib.suppress(Exception):
+                result['OverlapsXY'] = tuple(int(i) for i in overlap.split())
+
     return result
 
 
