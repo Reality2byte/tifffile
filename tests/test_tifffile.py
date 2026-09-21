@@ -31,7 +31,7 @@
 
 """Unittests for the tifffile package.
 
-:Version: 2026.9.15
+:Version: 2026.9.20
 
 """
 
@@ -85,6 +85,7 @@ try:
         TiffFileError,  # noqa: F405
         TiffSequence,  # noqa: F405
         TiffPage,  # noqa: F405
+        TiffPages,  # noqa: F405
         TiffFrame,  # noqa: F405
         FileHandle,  # noqa: F405
         FileSequence,  # noqa: F405
@@ -132,6 +133,7 @@ from tifffile import (  # noqa: F401
     TiffFileError,
     TiffFrame,
     TiffPage,
+    TiffPages,
     TiffPageSeries,
     TiffReader,
     TiffSequence,
@@ -198,6 +200,7 @@ from tifffile.tifffile import (  # noqa: F401
     tiff2fsspec,
     tiffcomment,
     transpose_axes,
+    trestle_description_metadata,
     unique_strings,
     unpack_rgb,
     update_kwargs,
@@ -476,6 +479,21 @@ def assert_asxarray_method(
     assert isinstance(da, xarray.DataArray)
     assert_array_equal(da.values, image)
     return da
+
+
+def assert_nextifd_offsets(tif: TiffFile) -> None:
+    """Assert _nextifd_* traverse IFD chain correctly."""
+    fh = tif.filehandle
+    tiff = tif.tiff
+    for i, page in enumerate(tif.pages[:-1]):
+        fieldpos = TiffPages._nextifd_fieldpos(fh, page.offset, tiff)
+        fh.seek(fieldpos)
+        next_ifd = struct.unpack(tiff.offsetformat, fh.read(tiff.offsetsize))[
+            0
+        ]
+        assert next_ifd == tif.pages[i + 1].offset
+        assert page._nextifd_offset() == tif.pages[i + 1].offset
+    assert tif.pages[-1]._nextifd_offset() == 0
 
 
 class TempFileName:
@@ -2657,6 +2675,28 @@ def test_issue_svs_description():
         'Copyright': 'Hamamatsu Photonics KK',
         'AppMag': 20,
         'Webslide Files': 5329,
+    }
+
+    # Mikroscan format
+    assert svs_description_metadata(
+        'Mikroscan Image Structure\n'
+        '32512x21248 [0, 0 32512x21248] (256x256) JPEG / RGB Q = 30'
+        '|AppMag = 40'
+        '|MPP = 0.227343'
+    ) == {
+        'Header': (
+            'Mikroscan Image Structure\n'
+            '32512x21248 [0, 0 32512x21248] (256x256) JPEG / RGB Q = 30'
+        ),
+        'AppMag': 40,
+        'MPP': 0.227343,
+    }
+
+    # Motic format
+    assert svs_description_metadata('Motic Images|AppMag = 20|MPP = 0.5') == {
+        'Header': 'Motic Images',
+        'AppMag': 20,
+        'MPP': 0.5,
     }
 
 
@@ -5182,6 +5222,142 @@ def test_pages_delete_erase_readonly_error():
                 tif.pages.first.delete(erase=True)
 
 
+@pytest.mark.skipif(SKIP_FILE, reason=REASON)
+def test_pages_delete_ndpi():
+    """Test deleting macro image from NDPI file."""
+    filename = _file('HamamatsuNDPI/hamamatsu_5-layers.ndpi')
+    with open(filename, 'rb') as fh:
+        file = BytesIO(fh.read())
+
+    with TiffFile(file, mode='r+', is_ndpi=True) as tif:
+        assert tif.is_ndpi
+        assert len(tif.pages) == 37
+        assert len(tif.series) == 3
+
+        series = tif.series[0]
+        page = series[0]
+        tag = page.tags['Make']
+        assert tag.valueoffset == 12
+        assert tag.value == 'Hamamatsu'
+        assert page.index == 0
+        assert series.name == 'Baseline'
+        assert series.shape == (7, 12032, 11520, 3)
+        assert len(series.levels) == 5
+
+        series = tif.series[2]
+        page = series[0]
+        tag = page.tags['Make']
+        assert tag.valueoffset == 12  # value is shared among pages
+        assert tag.value == 'Hamamatsu'
+        assert page.index == 36
+        assert series.name == 'Map'
+        assert series.shape == (196, 575)
+        data = series.asarray()
+
+        series = tif.series[1]
+        page = series[0]
+        assert page.index == 35
+        assert series.name == 'Macro'
+        assert series.shape == (392, 1151, 3)
+        jpeg = (page.dataoffsets[0], page.databytecounts[0])
+        page.delete(erase=True)
+
+    file.seek(0)
+
+    with TiffFile(file, is_ndpi=True) as tif:
+        assert tif.is_ndpi
+        assert len(tif.pages) == 36
+        assert len(tif.series) == 2
+
+        series = tif.series[0]
+        page = series[0]
+        tag = page.tags['Make']
+        assert tag.valueoffset == 12
+        assert tag.value == 'Hamamatsu'  # value is not erased
+        assert series.name == 'Baseline'
+        assert series.shape == (7, 12032, 11520, 3)
+        assert len(series.levels) == 5
+
+        series = tif.series[1]
+        page = series[0]
+        assert page.index == 35
+        assert series.name == 'Map'  # not 'Macro'
+        assert series.shape == (196, 575)
+        assert_array_equal(series.asarray(), data)
+
+        # assert JPEG image was erased
+        tif.filehandle.seek(jpeg[0])
+        assert tif.filehandle.read(jpeg[1]) == bytes(jpeg[1])
+
+
+@pytest.mark.skipif(SKIP_LARGE or SKIP_FILE, reason=REASON)
+def test_pages_delete_ndpi_large():
+    """Test deleting macro image from NDPI file > 4GB."""
+    filename = _file('HamamatsuNDPI/103680x188160.ndpi')
+    with open(filename, 'rb') as fh:
+        file = BytesIO(fh.read())
+
+    with TiffFile(file, mode='r+', is_ndpi=True) as tif:
+        assert tif.is_ndpi
+        assert len(tif.pages) == 8
+        assert len(tif.series) == 3
+
+        series = tif.series[0]
+        page = series[0]
+        tag = page.tags['Make']
+        assert tag.valueoffset == 12
+        assert tag.value == 'Hamamatsu'
+        assert page.index == 0
+        assert series.name == 'S10533009'
+        assert series.shape == (103680, 188160, 3)
+        assert len(series.levels) == 6
+
+        series = tif.series[2]
+        page = series[0]
+        tag = page.tags['Make']
+        assert tag.valueoffset == 12  # value is shared among pages
+        assert tag.value == 'Hamamatsu'
+        assert page.index == 7
+        assert series.name == 'Map'
+        assert series.shape == (200, 600)
+        data = series.asarray()
+
+        series = tif.series[1]
+        page = series[0]
+        assert page.index == 6
+        assert series.name == 'Macro'
+        assert series.shape == (718, 2154, 3)
+        jpeg = (page.dataoffsets[0], page.databytecounts[0])
+        page.delete(erase=True)
+
+    file.seek(0)
+
+    with TiffFile(file, is_ndpi=True) as tif:
+        assert tif.is_ndpi
+        assert len(tif.pages) == 7
+        assert len(tif.series) == 2
+
+        series = tif.series[0]
+        page = series[0]
+        tag = page.tags['Make']
+        assert tag.valueoffset == 12
+        assert tag.value == 'Hamamatsu'  # value is not erased
+        assert series.name == 'S10533009'
+        assert series.shape == (103680, 188160, 3)
+        assert len(series.levels) == 6
+
+        series = tif.series[1]
+        page = series[0]
+        assert page.index == 6
+        assert series.name == 'Map'  # not 'Macro'
+        assert series.shape == (200, 600)
+        assert_array_equal(series.asarray(), data)
+
+        # assert JPEG image was erased
+        tif.filehandle.seek(jpeg[0])
+        assert tif.filehandle.read(jpeg[1]) == bytes(jpeg[1])
+
+
 def test_parse_kwargs():
     """Test parse_kwargs function."""
     kwargs = {'one': 1, 'two': 2, 'four': 4}
@@ -5903,6 +6079,35 @@ def test_func_huron_description_metadata():
     assert meta['Image Quality'] == 0.9
     assert meta['DeviceID'] == 'LE176'
     assert huron_description_metadata('') == {}
+
+
+def test_func_trestle_description_metadata():
+    """Test trestle_description_metadata function."""
+    # semicolon-delimited key=value pairs
+    description = 'OverlapsXY = 10; MedScan v3.4; Tile_Size = 512x512'
+    meta = trestle_description_metadata(description)
+    assert meta['OverlapsXY'] == 10
+    assert meta['MedScan v3.4'] is None
+    assert meta['Tile_Size'] == '512x512'
+
+    # empty description
+    assert trestle_description_metadata('') == {}
+
+    # only key=value pairs
+    description = (
+        'OverlapsXY = 64 64 32 32 16 16; Resolution = 0.5; Quality = 85'
+    )
+    meta = trestle_description_metadata(description)
+    assert meta['OverlapsXY'] == (64, 64, 32, 32, 16, 16)
+    assert meta['Resolution'] == 0.5
+    assert meta['Quality'] == 85
+
+    # mixed key=value and standalone values
+    description = 'Key1 = value1; StandaloneValue; Key2 = 42'
+    meta = trestle_description_metadata(description)
+    assert meta['Key1'] == 'value1'
+    assert meta['StandaloneValue'] is None
+    assert meta['Key2'] == 42
 
 
 def test_func_astrotiff_description_metadata(caplog):
@@ -9591,7 +9796,7 @@ def test_read_100000_pages_movie():
         assert frame.size == 4096
         assert frame.nbytes == 8192
         assert frame.axes == 'YX'
-        assert frame._nextifd() == 819200206
+        assert frame._nextifd_offset() == 819200206
         assert frame.is_final
         assert frame.is_contiguous
         assert frame.is_memmappable
@@ -10687,6 +10892,80 @@ def test_read_lsm_mb231paxgfp_060214():
         assert__str__(tif, 0)
 
 
+@pytest.mark.skipif(SKIP_FILE or SKIP_CODECS or SKIP_LARGE, reason=REASON)
+def test_read_lsm_mptcyx():
+    """Test read compressed LSM > 4GB."""
+    # MPTCYX, (25, 4, 12, 33, 1024, 1024), 2400 pages
+    # The dataoffsets in this file failed to unwrap with tifffile <= 2026.9.15.
+    # Reported by songniz@uci.edu on 11/10/2025
+    filename = _file('LSM/CNTL_K_FCCP_BA_2025_11_08__12_48_39_lzw.lsm')
+    with TiffFile(filename) as tif:
+        assert tif.is_lsm
+        assert tif.byteorder == '<'
+        assert len(tif.pages) == 2400
+        assert len(tif.series) == 2
+        # assert page properties
+        page = tif.pages.first
+        assert page.is_lsm
+        assert not page.is_contiguous
+        assert page.compression == COMPRESSION.LZW
+        assert page.imagewidth == 1024
+        assert page.imagelength == 1024
+        assert page.bitspersample == 16
+        assert page.samplesperpixel == 33
+        page = tif.pages[1]
+        assert page.is_reduced
+        assert page.photometric == PHOTOMETRIC.RGB
+        assert page.planarconfig == PLANARCONFIG.SEPARATE
+        assert page.compression == COMPRESSION.NONE
+        assert page.imagewidth == 128
+        assert page.imagelength == 128
+        assert page.samplesperpixel == 3
+        assert page.bitspersample == 8
+        # assert series properties
+        series = tif.series[0]
+        assert series.dtype == numpy.uint16
+        assert series.shape == (25, 4, 12, 33, 1024, 1024)
+        assert tif.series(squeeze=False)[0].shape == (
+            25,
+            4,
+            12,
+            33,
+            1024,
+            1024,
+        )
+        assert series.axes == 'MPTCYX'
+        assert tif.series(squeeze=False)[0].axes == 'MPTCYX'
+        assert series.kind == 'lsm'
+        if 1:
+            series = tif.series[1]
+            assert series.dtype == numpy.uint8
+            assert series.shape == (25, 4, 12, 3, 128, 128)
+            assert series.axes == 'MPTSYX'
+            assert series.kind == 'lsm'
+        # assert data
+        page = tif.pages[1234]  # index=(12, 3, 5, 0) in shape=(25, 4, 12, 2)
+        data = page.asarray()
+        assert data.shape == (33, 1024, 1024)
+        assert data.dtype == numpy.uint16
+        assert data.sum(dtype=numpy.uint64) == 23088717250
+        del data
+        # assert lsm_info tags
+        tags = tif.lsm_metadata
+        assert tags['DimensionX'] == 1024
+        assert tags['DimensionY'] == 1024
+        assert tags['DimensionZ'] == 1
+        assert tags['DimensionP'] == 4
+        assert tags['DimensionM'] == 25
+        assert tags['DimensionTime'] == 12
+        assert tags['DimensionChannels'] == 33
+        # assert some lsm_scan_info tags
+        tags = tif.lsm_metadata['ScanInformation']
+        assert tags['ScanMode'] == 'Plane'
+        assert tags['User'] == 'lfdguest1'
+        assert__str__(tif, 0)
+
+
 @pytest.mark.skipif(SKIP_FILE or SKIP_CODECS, reason=REASON)
 def test_read_lsm_lzw_no_eoi():
     """Test read LSM with LZW compressed strip without EOI."""
@@ -11200,6 +11479,8 @@ def test_read_ndpi_cmu1():
         assert len(series.levels) == 4
         assert series.levels[1].mpp[0] > series.levels[0].mpp[0]
         assert series.attrs['magnification'] == 20.0
+
+        assert_nextifd_offsets(tif)
         assert__str__(tif)
 
 
@@ -11308,6 +11589,9 @@ def test_read_ndpi_4gb():
         # cannot decode base levels since JPEG compressed size > 2 GB
         # series.levels[0].asarray()
         assert_aszarr_method(series.levels[5], data, maxworkers=1)
+
+        assert tif.pages[0].offset > 2**32  # first IFD is above 4 GB
+        assert_nextifd_offsets(tif)
         assert__str__(tif)
 
 
@@ -11664,6 +11948,113 @@ def test_read_svs_jp2k_33003_1():
         assert len(series.coords['X']) == 15374
         assert_aszarr_method(page)
         assert__str__(tif)
+
+
+@pytest.mark.skipif(
+    SKIP_FILE or SKIP_CODECS or not imagecodecs.JPEG.available,
+    reason=REASON,
+)
+def test_read_mikroscan():
+    """Test read Mikroscan TIFF slide."""
+    filename = _file('MikroScan/01_I_RE_B.tif')
+    with TiffFile(filename) as tif:
+        assert tif.is_mikroscan
+        assert not tif.is_svs
+        assert len(tif.pages) == 3
+        assert len(tif.series) == 2
+
+        # first page (baseline)
+        page = tif.pages.first
+        assert page.is_mikroscan
+        assert not page.is_svs
+        assert page.is_tiled
+        assert page.photometric == PHOTOMETRIC.RGB
+        assert page.compression == COMPRESSION.JPEG
+        assert page.shape == (21248, 32512, 3)
+        assert page.dtype == numpy.uint8
+
+        # series
+        series = tif.series[0]
+        assert series.kind == 'mikroscan'
+        assert series.name == 'Baseline'
+        assert series.shape == (21248, 32512, 3)
+        assert series.mpp == pytest.approx((0.227343, 0.227343))
+        assert 'X' in series.coords
+        assert 'Y' in series.coords
+        assert 'S' in series.coords
+        assert_allclose(series.coords['X'][1], 0.227343, rtol=1e-6)
+        assert_allclose(series.coords['Y'][1], 0.227343, rtol=1e-6)
+
+        # thumbnail
+        series_thumb = tif.series[1]
+        assert series_thumb.kind == 'mikroscan'
+        assert series_thumb.name == 'Thumbnail'
+        assert series_thumb.shape == (1328, 2032, 3)
+
+
+@pytest.mark.skipif(
+    SKIP_FILE or SKIP_CODECS or not imagecodecs.JPEG.available,
+    reason=REASON,
+)
+def test_read_motic():
+    """Test read Motic TIFF slide."""
+    # Motic format is structurally identical to Aperio SVS
+    # TODO: obtain Motic test file
+    pytest.skip('Motic test file not available')
+
+
+@pytest.mark.skipif(
+    SKIP_FILE or SKIP_CODECS or not imagecodecs.JPEG.available,
+    reason=REASON,
+)
+def test_read_trestle():
+    """Test read Trestle TIFF slide."""
+    filename = _file('Trestle/CMU-1/CMU-1.tif')
+    with TiffFile(filename) as tif:
+        assert tif.is_trestle
+        assert not tif.is_svs
+        assert len(tif.pages) == 7
+        assert len(tif.series) == 1
+
+        # first page (baseline)
+        page = tif.pages.first
+        assert page.is_trestle
+        assert page.is_tiled
+        assert page.photometric == PHOTOMETRIC.YCBCR
+        assert page.compression == COMPRESSION.JPEG
+        assert page.shape == (33792, 46592, 3)
+        assert page.dtype == numpy.uint8
+        assert page.software[:7] == 'MedScan'
+
+        # series
+        series = tif.series[0]
+        assert series.kind == 'trestle'
+        assert series.name == 'Baseline'
+        assert series.shape == (33792, 46592, 3)
+        assert len(series.levels) == 7  # baseline + 6 pyramid levels
+
+        # metadata
+        meta = tif.trestle_metadata
+        assert meta is not None
+        assert isinstance(meta, dict)
+        assert meta['Background Color'] == 'E6E6E6'
+        assert meta['Objective Power'] == 10
+        assert meta['JPEG Quality'] == 75
+        assert meta['OverlapsXY'] == (64, 64, 32, 32, 16, 16)
+
+        # series coords and mpp
+        assert series.coord_units == {'X': 'micrometer', 'Y': 'micrometer'}
+        assert series.mpp == pytest.approx((0.575, 0.575), rel=1e-2)
+        assert 'X' in series.coords
+        assert 'Y' in series.coords
+        assert_allclose(series.coords['X'][1], 0.575, atol=0.005)
+        assert_allclose(series.coords['Y'][1], 0.575, atol=0.005)
+
+        # pyramid levels
+        assert series.levels[1].shape == (15360, 21632, 3)
+        assert series.levels[2].shape == (7296, 10400, 3)
+        assert series.levels[1].mpp == pytest.approx((1.24, 1.27), rel=1e-2)
+        assert series.levels[2].mpp == pytest.approx((2.57, 2.66), rel=1e-2)
 
 
 @pytest.mark.skipif(
@@ -18100,13 +18491,13 @@ def test_write_subidfs(ome, tiled, compressed, series, repeats, subifds):
                     assert page.pages is None
 
             for i, page in enumerate(tif.pages[:-1]):
-                assert page._nextifd() == tif.pages[i + 1].offset
+                assert page._nextifd_offset() == tif.pages[i + 1].offset
 
                 if subifds:
                     for subifd in page.pages:
                         assert subifd.is_subifd
                         assert subifd.subfiletype == FILETYPE.REDUCEDIMAGE
-                        assert subifd._nextifd() == 0
+                        assert subifd._nextifd_offset() == 0
                 else:
                     assert page.pages is None
 
@@ -18154,11 +18545,11 @@ def test_write_subifd_chain():
             subifd0 = page.pages[0]
             assert_array_equal(subifd0.asarray(), data[1])
             # first subifd NextIFD points to the chained subifd
-            next_offset = subifd0._nextifd()
+            next_offset = subifd0._nextifd_offset()
             assert next_offset != 0
             tif.filehandle.seek(next_offset)
             subifd1 = TiffPage(tif, index=(0, 1))
-            assert subifd1._nextifd() == 0
+            assert subifd1._nextifd_offset() == 0
             assert_array_equal(subifd1.asarray(), data[2])
 
 
@@ -18183,8 +18574,8 @@ def test_write_subifd_tree():
             assert len(page.pages) == 2
             subifd0, subifd1 = page.pages
             # all subifds have NextIFD=0
-            assert subifd0._nextifd() == 0
-            assert subifd1._nextifd() == 0
+            assert subifd0._nextifd_offset() == 0
+            assert subifd1._nextifd_offset() == 0
             assert_array_equal(subifd0.asarray(), data[1])
             assert_array_equal(subifd1.asarray(), data[2])
 
