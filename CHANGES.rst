@@ -1,6 +1,13 @@
 Revisions
 =========
 
+2026.9.20
+
+- Fix TiffPage.delete corrupting NDPI files.
+- Fix unwrapping offsets in LSM files > 4GB with T, P, and M dimensions.
+- Support Mikroscan and Motic formats (structurally identical to SVS).
+- Support MedScan Trestle series and metadata.
+
 2026.9.15
 
 - Fix MMStack series when numeric Summary metadata values are strings (#334).
