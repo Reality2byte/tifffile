@@ -37,7 +37,7 @@ many proprietary metadata formats.
 
 :Author: `Christoph Gohlke <https://www.cgohlke.com>`_
 :License: BSD-3-Clause
-:Version: 2026.9.15
+:Version: 2026.9.20
 :DOI: `10.5281/zenodo.6795860 <https://doi.org/10.5281/zenodo.6795860>`_
 
 Quickstart
@@ -76,17 +76,24 @@ This revision was tested with the following requirements and dependencies
   (required for encoding or decoding LZW, JPEG, etc. compressed segments)
 - `Xarray <https://pypi.org/project/xarray>`_ 2026.7.0
   (required only for reading xarray DataArrays)
-- `Matplotlib <https://pypi.org/project/matplotlib/>`_ 3.11.1
+- `Matplotlib <https://pypi.org/project/matplotlib/>`_ 3.11.2
   (required for plotting)
 - `Lxml <https://pypi.org/project/lxml/>`_ 6.1.3
   (required only for validating and printing XML)
-- `Zarr <https://pypi.org/project/zarr/>`_ 3.3.0
+- `Zarr <https://pypi.org/project/zarr/>`_ 3.4.0
   (required only for using Zarr stores)
 - `Kerchunk <https://pypi.org/project/kerchunk/>`_ 0.2.10
   (required only for opening ReferenceFileSystem files)
 
 Revisions
 ---------
+
+2026.9.20
+
+- Fix TiffPage.delete corrupting NDPI files.
+- Fix unwrapping offsets in LSM files > 4GB with T, P, and M dimensions.
+- Support Mikroscan and Motic formats (structurally identical to SVS).
+- Support MedScan Trestle series and metadata.
 
 2026.9.15
 
@@ -211,8 +218,7 @@ handling multi-dimensional data, or working around format constraints:
   frame data in the file and the image stack. The TIFF structures and metadata
   are often corrupted or wrong. Tifffile can read MMStack files.
 - **Carl Zeiss LSM** files store all IFDs below 4 GB and wrap around 32-bit
-  StripOffsets pointing to image data above 4 GB. The StripOffsets of each
-  series and position require separate unwrapping. The StripByteCounts tag
+  StripOffsets pointing to image data above 4 GB. The StripByteCounts tag
   contains the number of bytes for the uncompressed data. Tifffile can read
   LSM files of any size.
 - **MetaMorph STK** files contain additional image planes stored
@@ -230,10 +236,11 @@ handling multi-dimensional data, or working around format constraints:
   JPEG compressed segments with dimensions >65530 or missing restart markers
   cannot be decoded with common JPEG libraries. Tifffile works around this
   limitation by separately decoding the MCUs between restart markers, which
-  performs poorly. BitsPerSample, SamplesPerPixel, and
-  PhotometricInterpretation tags may contain wrong values, which can be
-  corrected using the value of tag 65441.
+  performs poorly.
+  BitsPerSample, SamplesPerPixel, and PhotometricInterpretation tags may
+  contain wrong values, which can be corrected using the value of tag 65441.
   ASCII string tag values are not stored inline.
+  Tag values and may be shared between multiple pages.
 - **Philips TIFF** slides store padded ImageWidth and ImageLength tag values
   for tiled pages. The values can be corrected using the DICOM_PIXEL_SPACING
   attributes of the XML formatted description of the first page. Tile offsets
@@ -243,6 +250,11 @@ handling multi-dimensional data, or working around format constraints:
   in the XMP tag. Volumetric scans are stored using the ImageDepth extension.
   Tifffile can read BIF and decode individual tiles but does not perform
   stitching.
+- **MedScan Trestle** slides are pyramidal tiled TIFF files where tiles
+  in each level overlap their neighbors. The per-level overlap values are
+  specified in the OverlapsXY field of the ImageDescription tag.
+  Tifffile can read Trestle files and decode individual tiles but does not
+  perform stitching.
 - **ScanImage** optionally allows corrupted non-BigTIFF files > 2 GB.
   The values of StripOffsets and StripByteCounts can be recovered using the
   constant differences of the offsets of IFD and tag values throughout the
